@@ -2,12 +2,23 @@
 #define H_GLOBALS
 
 #include <stdint.h>
-#include <unistd.h>
+#include <stddef.h>
+
+#ifdef MAC68K_PLATFORM
+  // Classic Mac OS doesn't have unistd.h with all POSIX features
+  // ssize_t defined in mac68k_net.h
+  #include "mac68k_net.h"
+  void task_yield(void);
+#else
+  #include <unistd.h>
+#endif
 
 #ifdef ESP_PLATFORM
   #define WIFI_SSID "your-ssid"
   #define WIFI_PASS "your-password"
   void task_yield ();
+#elif defined(MAC68K_PLATFORM)
+  // task_yield already declared above
 #else
   #define task_yield();
 #endif
@@ -81,7 +92,8 @@
 // When targeting ESP-IDF, LittleFS is used to manage flash reads and
 // writes. Flash is typically *very* slow and unreliable, which is why
 // this option is disabled by default when targeting ESP-IDF.
-#ifndef ESP_PLATFORM
+// Disabled for Mac68k until filesystem support is added.
+#if !defined(ESP_PLATFORM) && !defined(MAC68K_PLATFORM)
   #define SYNC_WORLD_TO_DISK
 #endif
 

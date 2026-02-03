@@ -5,6 +5,8 @@
   #include "lwip/sockets.h"
   #include "lwip/netdb.h"
   #include "esp_task_wdt.h"
+#elif defined(MAC68K_PLATFORM)
+  #include "mac68k_net.h"
 #else
   #ifdef _WIN32
     #include <winsock2.h>

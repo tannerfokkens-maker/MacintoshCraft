@@ -1,7 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
+
+#ifdef MAC68K_PLATFORM
+  #include "mac68k_net.h"
+  extern int errno;
+#else
+  #include <errno.h>
+#endif
+
 #ifdef _WIN32
 #include <winsock2.h>
 #endif

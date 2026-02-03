@@ -1,11 +1,19 @@
 #include <stdio.h>
 #include <string.h>
-#include <errno.h>
+
+#ifdef MAC68K_PLATFORM
+  #include "mac68k_net.h"
+  extern int errno;
+#else
+  #include <errno.h>
+#endif
 
 #ifdef ESP_PLATFORM
   #include "lwip/sockets.h"
   #include "lwip/netdb.h"
   #include "esp_timer.h"
+#elif defined(MAC68K_PLATFORM)
+  /* Using mac68k_net.h stubs */
 #else
   #ifdef _WIN32
     #include <winsock2.h>
@@ -288,8 +296,15 @@ uint64_t splitmix64 (uint64_t state) {
 // the start of the program*, and NOT wall clock time. To ensure
 // compatibility, this should only be used to measure time intervals.
 int64_t get_program_time () {
+  #ifdef MAC68K_PLATFORM
+  // Classic Mac OS: TickCount() returns 1/60th second ticks since boot
+  // Convert to microseconds: ticks * (1000000 / 60) = ticks * 16667
+  extern unsigned long TickCount(void);
+  return (int64_t)TickCount() * 16667LL;
+  #else
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (int64_t)ts.tv_sec * 1000000LL + ts.tv_nsec / 1000LL;
+  #endif
 }
 #endif

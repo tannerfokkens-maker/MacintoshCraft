@@ -1,12 +1,15 @@
 #include <stdio.h>
 #include <stdint.h>
-#ifdef _WIN32
+
+#ifdef MAC68K_PLATFORM
+  #include "mac68k_net.h"
+#elif defined(_WIN32)
   #include <winsock2.h>
   #include <ws2tcpip.h>
 #else
   #include <arpa/inet.h>
+  #include <unistd.h>
 #endif
-#include <unistd.h>
 
 #include "globals.h"
 

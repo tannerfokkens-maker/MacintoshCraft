@@ -1,8 +1,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <fcntl.h>
-#include <errno.h>
+
+#ifdef MAC68K_PLATFORM
+  #include "mac68k_net.h"
+  #include "mac68k_console.h"
+  extern int errno;
+#else
+  #include <fcntl.h>
+  #include <errno.h>
+#endif
 
 #ifndef CLOCK_REALTIME
 #define CLOCK_REALTIME 0
@@ -17,6 +24,8 @@
   #include "esp_timer.h"
   #include "lwip/sockets.h"
   #include "lwip/netdb.h"
+#elif defined(MAC68K_PLATFORM)
+  /* Using mac68k_net.h stubs and mac68k_console */
 #else
   #include <sys/types.h>
   #ifdef _WIN32
@@ -497,6 +506,12 @@ void handlePacket (int client_fd, int length, int packet_id, int state) {
 }
 
 int main () {
+  #ifdef MAC68K_PLATFORM
+    // Initialize Mac Toolbox and console window
+    console_init();
+    console_printf("Starting Bareiron server...\r\r");
+  #endif
+
   #ifdef _WIN32 //initialize windows socket
     WSADATA wsa;
       if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -507,13 +522,21 @@ int main () {
 
   // Hash the seeds to ensure they're random enough
   world_seed = splitmix64(world_seed);
-  printf("World seed (hashed): ");
-  for (int i = 3; i >= 0; i --) printf("%X", (unsigned int)((world_seed >> (8 * i)) & 255));
+  #ifdef MAC68K_PLATFORM
+    console_printf("World seed (hashed): %lX\r", (unsigned long)world_seed);
+  #else
+    printf("World seed (hashed): ");
+    for (int i = 3; i >= 0; i --) printf("%X", (unsigned int)((world_seed >> (8 * i)) & 255));
+  #endif
 
   rng_seed = splitmix64(rng_seed);
-  printf("\nRNG seed (hashed): ");
-  for (int i = 3; i >= 0; i --) printf("%X", (unsigned int)((rng_seed >> (8 * i)) & 255));
-  printf("\n\n");
+  #ifdef MAC68K_PLATFORM
+    console_printf("RNG seed (hashed): %lX\r\r", (unsigned long)rng_seed);
+  #else
+    printf("\nRNG seed (hashed): ");
+    for (int i = 3; i >= 0; i --) printf("%X", (unsigned int)((rng_seed >> (8 * i)) & 255));
+    printf("\n\n");
+  #endif
 
   // Initialize block changes entries as unallocated
   for (int i = 0; i < MAX_BLOCK_CHANGES; i ++) {
@@ -538,16 +561,30 @@ int main () {
 
   server_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd == -1) {
-    perror("socket failed");
-    exit(EXIT_FAILURE);
+    #ifdef MAC68K_PLATFORM
+      console_printf("ERROR: socket() failed\r");
+      console_printf("Networking not yet implemented for 68k Mac.\r\r");
+      console_printf("Press Cmd-Q to quit.\r");
+      while (!console_should_quit()) {
+        console_poll_events();
+      }
+      return 1;
+    #else
+      perror("socket failed");
+      exit(EXIT_FAILURE);
+    #endif
   }
 #ifdef _WIN32
   if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
       (const char*)&opt, sizeof(opt)) < 0) {
 #else
   if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-#endif    
-    perror("socket options failed");
+#endif
+    #ifdef MAC68K_PLATFORM
+      console_printf("ERROR: setsockopt failed\r");
+    #else
+      perror("socket options failed");
+    #endif
     exit(EXIT_FAILURE);
   }
 
@@ -557,18 +594,30 @@ int main () {
   server_addr.sin_port = htons(PORT);
 
   if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-    perror("bind failed");
+    #ifdef MAC68K_PLATFORM
+      console_printf("ERROR: bind failed\r");
+    #else
+      perror("bind failed");
+    #endif
     close(server_fd);
     exit(EXIT_FAILURE);
   }
 
   // Listen for incoming connections
   if (listen(server_fd, 5) < 0) {
-    perror("listen failed");
+    #ifdef MAC68K_PLATFORM
+      console_printf("ERROR: listen failed\r");
+    #else
+      perror("listen failed");
+    #endif
     close(server_fd);
     exit(EXIT_FAILURE);
   }
-  printf("Server listening on port %d...\n", PORT);
+  #ifdef MAC68K_PLATFORM
+    console_printf("Server listening on port %d...\r\r", PORT);
+  #else
+    printf("Server listening on port %d...\n", PORT);
+  #endif
 
   // Make the socket non-blocking
   // This is necessary to not starve the idle task during slow connections
@@ -594,6 +643,11 @@ int main () {
   while (true) {
     // Check if it's time to yield to the idle task
     task_yield();
+
+    #ifdef MAC68K_PLATFORM
+      // Check for quit request (Cmd-Q)
+      if (console_should_quit()) break;
+    #endif
 
     // Attempt to accept a new connection
     for (int i = 0; i < MAX_PLAYERS; i ++) {
@@ -720,12 +774,17 @@ int main () {
   }
 
   close(server_fd);
- 
-  #ifdef _WIN32 //cleanup windows socket
+
+  #ifdef MAC68K_PLATFORM
+    cleanup_open_transport();
+    console_print("Server closed.\r");
+  #elif defined(_WIN32)
     WSACleanup();
   #endif
 
-  printf("Server closed.\n");
+  #ifndef MAC68K_PLATFORM
+    printf("Server closed.\n");
+  #endif
 
 }
 
