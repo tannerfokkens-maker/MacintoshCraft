@@ -27,4 +27,9 @@ uint8_t getBlockAt (int x, int y, int z);
 extern uint8_t chunk_section[4096];
 uint8_t buildChunkSection (int cx, int cy, int cz);
 
+/* Chunk cache functions */
+void initChunkCache(void);
+void invalidateChunkCache(int16_t x, uint8_t y, int16_t z);
+void clearChunkCache(void);
+
 #endif

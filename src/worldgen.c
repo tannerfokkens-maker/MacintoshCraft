@@ -396,9 +396,189 @@ ChunkAnchor chunk_anchors[(16 / CHUNK_SIZE + 1) * (16 / CHUNK_SIZE + 1)];
 ChunkFeature chunk_features[256 / (CHUNK_SIZE * CHUNK_SIZE)];
 uint8_t chunk_section_height[16][16];
 
+// ============================================================================
+// Chunk Section Cache
+// With 24MB RAM on 68k Mac, we can cache many generated chunks
+// Each cached chunk section is 4KB, so 256 entries = 1MB cache
+// ============================================================================
+
+#ifdef MAC68K_PLATFORM
+  #define CHUNK_CACHE_SIZE 256  /* 1MB cache for 68k Mac */
+#else
+  #define CHUNK_CACHE_SIZE 64   /* Smaller cache for other platforms */
+#endif
+
+typedef struct {
+  int16_t cx, cy, cz;     /* Chunk coordinates (signed for negative coords) */
+  uint8_t biome;          /* Cached biome value */
+  uint8_t valid;          /* 1 if entry contains valid data */
+  uint16_t lru_counter;   /* For LRU eviction */
+  uint8_t data[4096];     /* Cached chunk section data */
+} CachedChunkSection;
+
+static CachedChunkSection chunk_cache[CHUNK_CACHE_SIZE];
+static uint16_t cache_lru_clock = 0;
+static int cache_initialized = 0;
+
+/* Initialize cache (call once at startup) */
+void initChunkCache(void) {
+  if (cache_initialized) return;
+  for (int i = 0; i < CHUNK_CACHE_SIZE; i++) {
+    chunk_cache[i].valid = 0;
+    chunk_cache[i].lru_counter = 0;
+  }
+  cache_initialized = 1;
+}
+
+/* Invalidate cache entries affected by block changes */
+void invalidateChunkCache(int16_t x, uint8_t y, int16_t z) {
+  /* Find chunk coordinates containing this block */
+  int16_t cx = (x < 0) ? ((x - 15) / 16) * 16 : (x / 16) * 16;
+  int16_t cy = (y / 16) * 16;
+  int16_t cz = (z < 0) ? ((z - 15) / 16) * 16 : (z / 16) * 16;
+
+  /* Invalidate matching cache entry */
+  for (int i = 0; i < CHUNK_CACHE_SIZE; i++) {
+    if (chunk_cache[i].valid &&
+        chunk_cache[i].cx == cx &&
+        chunk_cache[i].cy == cy &&
+        chunk_cache[i].cz == cz) {
+      chunk_cache[i].valid = 0;
+      return;
+    }
+  }
+}
+
+/* Clear entire cache (call when world seed changes) */
+void clearChunkCache(void) {
+  for (int i = 0; i < CHUNK_CACHE_SIZE; i++) {
+    chunk_cache[i].valid = 0;
+  }
+}
+
+/* Hash function for cache lookup */
+static int chunkCacheHash(int16_t cx, int16_t cy, int16_t cz) {
+  /* Simple hash combining coordinates */
+  uint32_t h = (uint32_t)(cx * 73856093) ^ (uint32_t)(cy * 19349663) ^ (uint32_t)(cz * 83492791);
+  return (int)(h % CHUNK_CACHE_SIZE);
+}
+
+/* Find cache entry for coordinates, returns index or -1 if not found */
+static int findCacheEntry(int16_t cx, int16_t cy, int16_t cz) {
+  int hash = chunkCacheHash(cx, cy, cz);
+
+  /* Linear probing from hash position */
+  for (int i = 0; i < CHUNK_CACHE_SIZE; i++) {
+    int idx = (hash + i) % CHUNK_CACHE_SIZE;
+    if (!chunk_cache[idx].valid) continue;
+    if (chunk_cache[idx].cx == cx &&
+        chunk_cache[idx].cy == cy &&
+        chunk_cache[idx].cz == cz) {
+      return idx;
+    }
+  }
+  return -1;
+}
+
+/* Find slot for new entry (uses LRU eviction) */
+static int findCacheSlot(int16_t cx, int16_t cy, int16_t cz) {
+  int hash = chunkCacheHash(cx, cy, cz);
+
+  /* First pass: look for empty slot near hash position */
+  for (int i = 0; i < CHUNK_CACHE_SIZE; i++) {
+    int idx = (hash + i) % CHUNK_CACHE_SIZE;
+    if (!chunk_cache[idx].valid) {
+      return idx;
+    }
+  }
+
+  /* No empty slots, find LRU entry */
+  int lru_idx = 0;
+  uint16_t oldest = chunk_cache[0].lru_counter;
+  for (int i = 1; i < CHUNK_CACHE_SIZE; i++) {
+    /* Find entry with smallest (oldest) lru_counter */
+    if ((uint16_t)(cache_lru_clock - chunk_cache[i].lru_counter) >
+        (uint16_t)(cache_lru_clock - oldest)) {
+      oldest = chunk_cache[i].lru_counter;
+      lru_idx = i;
+    }
+  }
+
+  return lru_idx;
+}
+
+/* Internal: Generate chunk section without caching (original algorithm) */
+static uint8_t buildChunkSectionInternal(int cx, int cy, int cz);
+
 // Builds a 16x16x16 chunk of blocks and writes it to `chunk_section`
 // Returns the biome at the origin corner of the chunk
-uint8_t buildChunkSection (int cx, int cy, int cz) {
+// This is the PUBLIC function that uses caching
+uint8_t buildChunkSection(int cx, int cy, int cz) {
+  /* Initialize cache on first use */
+  if (!cache_initialized) {
+    initChunkCache();
+  }
+
+  /* Check cache for existing entry */
+  int cache_idx = findCacheEntry((int16_t)cx, (int16_t)cy, (int16_t)cz);
+  if (cache_idx >= 0) {
+    /* Cache hit: copy cached data to chunk_section */
+    memcpy(chunk_section, chunk_cache[cache_idx].data, 4096);
+    chunk_cache[cache_idx].lru_counter = ++cache_lru_clock;
+
+    /* Still need to apply block changes on top of cached data */
+    if (block_changes_count > 0) {
+      int cx_max = cx + 16;
+      int cy_max = cy + 16;
+      int cz_max = cz + 16;
+
+      for (int i = 0; i < block_changes_count; i++) {
+        uint8_t block = block_changes[i].block;
+        if (block == 0xFF) continue;
+        if (block == B_torch) continue;
+        #ifdef ALLOW_CHESTS
+          if (block == B_chest) continue;
+        #endif
+
+        short bx = block_changes[i].x;
+        uint8_t by = block_changes[i].y;
+        short bz = block_changes[i].z;
+
+        if (bx < cx || bx >= cx_max) continue;
+        if (by < cy || by >= cy_max) continue;
+        if (bz < cz || bz >= cz_max) continue;
+
+        int dx = bx - cx;
+        int dy = by - cy;
+        int dz = bz - cz;
+        unsigned address = (unsigned)(dx + (dz << 4) + (dy << 8));
+        unsigned index = (address & ~7u) | (7u - (address & 7u));
+        chunk_section[index] = block;
+      }
+    }
+
+    return chunk_cache[cache_idx].biome;
+  }
+
+  /* Cache miss: generate chunk section */
+  uint8_t biome = buildChunkSectionInternal(cx, cy, cz);
+
+  /* Store in cache (only if no block changes affect this chunk) */
+  /* Note: We always cache, but invalidate on block changes */
+  cache_idx = findCacheSlot((int16_t)cx, (int16_t)cy, (int16_t)cz);
+  chunk_cache[cache_idx].cx = (int16_t)cx;
+  chunk_cache[cache_idx].cy = (int16_t)cy;
+  chunk_cache[cache_idx].cz = (int16_t)cz;
+  chunk_cache[cache_idx].biome = biome;
+  chunk_cache[cache_idx].valid = 1;
+  chunk_cache[cache_idx].lru_counter = ++cache_lru_clock;
+  memcpy(chunk_cache[cache_idx].data, chunk_section, 4096);
+
+  return biome;
+}
+
+// Internal: Generate chunk section (called by buildChunkSection on cache miss)
+static uint8_t buildChunkSectionInternal(int cx, int cy, int cz) {
 
   // Precompute hashes, anchors and features for each relevant minichunk
   int anchor_index = 0, feature_index = 0;
