@@ -399,13 +399,13 @@ uint8_t chunk_section_height[16][16];
 // ============================================================================
 // Chunk Section Cache
 // With 24MB RAM on 68k Mac, we can cache many generated chunks
-// Each cached chunk section is 4KB, so 256 entries = 1MB cache
+// Each cached chunk section is 4KB, so 4096 entries = 16MB cache (8x view)
 // ============================================================================
 
 #ifdef MAC68K_PLATFORM
-  #define CHUNK_CACHE_SIZE 256  /* 1MB cache for 68k Mac */
+  #define CHUNK_CACHE_SIZE 4096  /* 16MB cache for 68k Mac (8x view) */
 #else
-  #define CHUNK_CACHE_SIZE 64   /* Smaller cache for other platforms */
+  #define CHUNK_CACHE_SIZE 64    /* Smaller cache for other platforms */
 #endif
 
 typedef struct {
@@ -480,8 +480,9 @@ static int findCacheEntry(int16_t cx, int16_t cy, int16_t cz) {
   return -1;
 }
 
-/* Find slot for new entry (uses LRU eviction) */
+/* Find slot for new entry (uses clock eviction for O(1) performance) */
 static int findCacheSlot(int16_t cx, int16_t cy, int16_t cz) {
+  static int clock_hand = 0;
   int hash = chunkCacheHash(cx, cy, cz);
 
   /* First pass: look for empty slot near hash position */
@@ -492,19 +493,20 @@ static int findCacheSlot(int16_t cx, int16_t cy, int16_t cz) {
     }
   }
 
-  /* No empty slots, find LRU entry */
-  int lru_idx = 0;
-  uint16_t oldest = chunk_cache[0].lru_counter;
-  for (int i = 1; i < CHUNK_CACHE_SIZE; i++) {
-    /* Find entry with smallest (oldest) lru_counter */
-    if ((uint16_t)(cache_lru_clock - chunk_cache[i].lru_counter) >
-        (uint16_t)(cache_lru_clock - oldest)) {
-      oldest = chunk_cache[i].lru_counter;
-      lru_idx = i;
+  /* No empty slots - use clock sweep to find eviction candidate */
+  /* Look for entry that hasn't been accessed recently (age > 16) */
+  for (int i = 0; i < CHUNK_CACHE_SIZE; i++) {
+    int idx = (clock_hand + i) % CHUNK_CACHE_SIZE;
+    if ((uint16_t)(cache_lru_clock - chunk_cache[idx].lru_counter) > 16) {
+      clock_hand = (idx + 1) % CHUNK_CACHE_SIZE;
+      return idx;
     }
   }
 
-  return lru_idx;
+  /* Fallback: evict at clock_hand position */
+  int idx = clock_hand;
+  clock_hand = (clock_hand + 1) % CHUNK_CACHE_SIZE;
+  return idx;
 }
 
 /* Internal: Generate chunk section without caching (original algorithm) */
