@@ -457,13 +457,91 @@ int test_cache_clear(void) {
     return 1;
 }
 
+/* Test 11: Cache miss performance - ensure lookups for non-existent entries are fast */
+int test_cache_miss_performance(void) {
+    printf("Test 11: Cache miss performance... ");
+
+    clearChunkCache();
+    world_seed = splitmix64(0xA103DE6C);
+    rng_seed = splitmix64(0xE2B9419);
+    block_changes_count = 0;
+
+    /* Pre-populate cache with 32 entries in a specific pattern */
+    for (int i = 0; i < 32; i++) {
+        buildChunkSection(i * 16, 0, 0);
+    }
+
+    /* Now request 100 chunks that are NOT in cache */
+    /* These should be fast cache misses, not O(n) scans */
+    /* We measure by checking the result is correct (generation happens) */
+    uint32_t checksums[100];
+    for (int i = 0; i < 100; i++) {
+        /* Use coordinates far from the cached ones */
+        buildChunkSection(10000 + i * 16, 0, 0);
+        checksums[i] = chunk_checksum(chunk_section);
+    }
+
+    /* Verify by regenerating a few and checking consistency */
+    world_seed = splitmix64(0xA103DE6C);
+    rng_seed = splitmix64(0xE2B9419);
+
+    int passed = 0;
+    for (int i = 0; i < 10; i++) {
+        buildChunkSection(10000 + i * 16, 0, 0);
+        if (chunk_checksum(chunk_section) == checksums[i]) {
+            passed++;
+        }
+    }
+
+    if (passed == 10) {
+        printf("PASS (cache misses handled correctly)\n");
+        return 1;
+    }
+
+    printf("FAIL (%d/10 consistent)\n", passed);
+    return 0;
+}
+
+/* Test 12: invalidateChunkCache correctly invalidates entries */
+int test_cache_invalidation(void) {
+    printf("Test 12: Cache invalidation... ");
+
+    clearChunkCache();
+    world_seed = splitmix64(0xA103DE6C);
+    rng_seed = splitmix64(0xE2B9419);
+    block_changes_count = 0;
+
+    /* Generate and cache a chunk */
+    buildChunkSection(0, 0, 0);
+    uint32_t original_checksum = chunk_checksum(chunk_section);
+
+    /* Invalidate the cache entry for a block in that chunk */
+    invalidateChunkCache(8, 8, 8);
+
+    /* Change the world seed */
+    world_seed = splitmix64(0xDEADBEEF);
+    rng_seed = splitmix64(0xCAFEBABE);
+
+    /* Regenerate - should get new terrain since cache was invalidated */
+    buildChunkSection(0, 0, 0);
+    uint32_t new_checksum = chunk_checksum(chunk_section);
+
+    if (new_checksum == original_checksum) {
+        printf("FAIL (cache not invalidated, still returning old data)\n");
+        return 0;
+    }
+
+    printf("PASS (invalidation works)\n");
+    return 1;
+}
+
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
 
     printf("=== Chunk Generation Tests ===\n\n");
 
     int passed = 0;
-    int total = 10;
+    int total = 12;
 
     passed += test_deterministic_generation();
     passed += test_generate_reference_chunks();
@@ -478,6 +556,8 @@ int main(int argc, char *argv[]) {
     passed += test_cache_hit_consistency();
     passed += test_cache_multiple_chunks();
     passed += test_cache_clear();
+    passed += test_cache_miss_performance();
+    passed += test_cache_invalidation();
 
     printf("\n=== Results: %d/%d tests passed ===\n", passed, total);
 

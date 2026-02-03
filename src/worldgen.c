@@ -420,6 +420,12 @@ static CachedChunkSection chunk_cache[CHUNK_CACHE_SIZE];
 static uint16_t cache_lru_clock = 0;
 static int cache_initialized = 0;
 
+/* Maximum probe distance for hash table operations (O(1) guarantee) */
+#define MAX_PROBE_DISTANCE 32
+
+/* Forward declaration */
+static int chunkCacheHash(int16_t cx, int16_t cy, int16_t cz);
+
 /* Initialize cache (call once at startup) */
 void initChunkCache(void) {
   if (cache_initialized) return;
@@ -431,19 +437,22 @@ void initChunkCache(void) {
 }
 
 /* Invalidate cache entries affected by block changes */
+/* Uses hash-based lookup with limited probing for O(1) performance */
 void invalidateChunkCache(int16_t x, uint8_t y, int16_t z) {
   /* Find chunk coordinates containing this block */
   int16_t cx = (x < 0) ? ((x - 15) / 16) * 16 : (x / 16) * 16;
   int16_t cy = (y / 16) * 16;
   int16_t cz = (z < 0) ? ((z - 15) / 16) * 16 : (z / 16) * 16;
 
-  /* Invalidate matching cache entry */
-  for (int i = 0; i < CHUNK_CACHE_SIZE; i++) {
-    if (chunk_cache[i].valid &&
-        chunk_cache[i].cx == cx &&
-        chunk_cache[i].cy == cy &&
-        chunk_cache[i].cz == cz) {
-      chunk_cache[i].valid = 0;
+  /* Use hash to find entry quickly */
+  int hash = chunkCacheHash(cx, cy, cz);
+  for (int i = 0; i < MAX_PROBE_DISTANCE; i++) {
+    int idx = (hash + i) % CHUNK_CACHE_SIZE;
+    if (chunk_cache[idx].valid &&
+        chunk_cache[idx].cx == cx &&
+        chunk_cache[idx].cy == cy &&
+        chunk_cache[idx].cz == cz) {
+      chunk_cache[idx].valid = 0;
       return;
     }
   }
@@ -464,11 +473,12 @@ static int chunkCacheHash(int16_t cx, int16_t cy, int16_t cz) {
 }
 
 /* Find cache entry for coordinates, returns index or -1 if not found */
+/* Uses limited probing (MAX_PROBE_DISTANCE) for O(1) performance */
 static int findCacheEntry(int16_t cx, int16_t cy, int16_t cz) {
   int hash = chunkCacheHash(cx, cy, cz);
 
-  /* Linear probing from hash position */
-  for (int i = 0; i < CHUNK_CACHE_SIZE; i++) {
+  /* Limited linear probing from hash position */
+  for (int i = 0; i < MAX_PROBE_DISTANCE; i++) {
     int idx = (hash + i) % CHUNK_CACHE_SIZE;
     if (!chunk_cache[idx].valid) continue;
     if (chunk_cache[idx].cx == cx &&
@@ -485,15 +495,15 @@ static int findCacheSlot(int16_t cx, int16_t cy, int16_t cz) {
   static int clock_hand = 0;
   int hash = chunkCacheHash(cx, cy, cz);
 
-  /* First pass: look for empty slot near hash position */
-  for (int i = 0; i < CHUNK_CACHE_SIZE; i++) {
+  /* First pass: look for empty slot near hash position (limited probe) */
+  for (int i = 0; i < MAX_PROBE_DISTANCE; i++) {
     int idx = (hash + i) % CHUNK_CACHE_SIZE;
     if (!chunk_cache[idx].valid) {
       return idx;
     }
   }
 
-  /* No empty slots - use clock sweep to find eviction candidate */
+  /* No empty slots nearby - use clock sweep to find eviction candidate */
   /* Look for entry that hasn't been accessed recently (age > 16) */
   for (int i = 0; i < CHUNK_CACHE_SIZE; i++) {
     int idx = (clock_hand + i) % CHUNK_CACHE_SIZE;
