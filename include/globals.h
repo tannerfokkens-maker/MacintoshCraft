@@ -43,7 +43,7 @@
 #define GAMEMODE 0
 
 // Max render distance, determines how many chunks to send
-#define VIEW_DISTANCE 2
+#define VIEW_DISTANCE 1
 
 // Time between server ticks in microseconds (default = 1s)
 #define TIME_BETWEEN_TICKS 1000000
@@ -92,8 +92,7 @@
 // When targeting ESP-IDF, LittleFS is used to manage flash reads and
 // writes. Flash is typically *very* slow and unreliable, which is why
 // this option is disabled by default when targeting ESP-IDF.
-// Disabled for Mac68k until filesystem support is added.
-#if !defined(ESP_PLATFORM) && !defined(MAC68K_PLATFORM)
+#if !defined(ESP_PLATFORM)
   #define SYNC_WORLD_TO_DISK
 #endif
 

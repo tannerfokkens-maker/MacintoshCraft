@@ -4,6 +4,7 @@
 
 #ifdef MAC68K_PLATFORM
   #include "mac68k_net.h"
+  #include "mac68k_console.h"
   extern int errno;
 #else
   #include <errno.h>
@@ -182,6 +183,13 @@ void handlePlayerDisconnect (int client_fd) {
 
 // Marks a client as connected and broadcasts their data to other players
 void handlePlayerJoin (PlayerData* player) {
+
+  // Log to server console
+  #ifdef MAC68K_PLATFORM
+    console_printf("%s joined the game\r", player->name);
+  #else
+    printf("%s joined the game\n", player->name);
+  #endif
 
   // Prepare join message for broadcast
   uint8_t player_name_len = strlen(player->name);
