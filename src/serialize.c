@@ -14,12 +14,8 @@
 #include "registries.h"
 #include "serialize.h"
 
-int64_t last_disk_sync_time = 0;
-
 // Restores world data from disk, or writes world file if it doesn't exist
 int initSerializer () {
-
-  last_disk_sync_time = get_program_time();
 
   #ifdef ESP_PLATFORM
     esp_vfs_littlefs_conf_t conf = {
@@ -170,19 +166,10 @@ void writePlayerDataToDisk () {
   fclose(file);
 }
 
-// Writes data queued for interval writes, but only if enough time has passed
-void writeDataToDiskOnInterval () {
-
-  // Skip this write if enough time hasn't passed since the last one
-  if (get_program_time() - last_disk_sync_time < DISK_SYNC_INTERVAL) return;
-  last_disk_sync_time = get_program_time();
-
-  // Write full player data and block changes buffers
+// Writes all world data to disk (call on shutdown)
+void writeAllDataToDisk () {
   writePlayerDataToDisk();
-  #ifdef DISK_SYNC_BLOCKS_ON_INTERVAL
   writeBlockChangesToDisk(0, block_changes_count);
-  #endif
-
 }
 
 #ifdef ALLOW_CHESTS

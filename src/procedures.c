@@ -1705,9 +1705,6 @@ void handleServerTick (int64_t time_since_last_tick) {
     sc_setHealth(player->client_fd, player->health, player->hunger, player->saturation);
   }
 
-  // Perform regular checks for if it's time to write to disk
-  writeDataToDiskOnInterval();
-
   /**
    * If the RNG seed ever hits 0, it'll never generate anything
    * else. This is because the fast_rand function uses a simple

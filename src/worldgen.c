@@ -490,9 +490,8 @@ static int findCacheEntry(int16_t cx, int16_t cy, int16_t cz) {
   return -1;
 }
 
-/* Find slot for new entry (uses clock eviction for O(1) performance) */
+/* Find slot for new entry - evicts oldest within probe distance for O(1) */
 static int findCacheSlot(int16_t cx, int16_t cy, int16_t cz) {
-  static int clock_hand = 0;
   int hash = chunkCacheHash(cx, cy, cz);
 
   /* First pass: look for empty slot near hash position (limited probe) */
@@ -503,20 +502,20 @@ static int findCacheSlot(int16_t cx, int16_t cy, int16_t cz) {
     }
   }
 
-  /* No empty slots nearby - use clock sweep to find eviction candidate */
-  /* Look for entry that hasn't been accessed recently (age > 16) */
-  for (int i = 0; i < CHUNK_CACHE_SIZE; i++) {
-    int idx = (clock_hand + i) % CHUNK_CACHE_SIZE;
-    if ((uint16_t)(cache_lru_clock - chunk_cache[idx].lru_counter) > 16) {
-      clock_hand = (idx + 1) % CHUNK_CACHE_SIZE;
-      return idx;
+  /* No empty slots nearby - evict oldest entry within probe distance */
+  /* This ensures entries are always findable by findCacheEntry */
+  int oldest_idx = hash % CHUNK_CACHE_SIZE;
+  uint16_t oldest_age = 0;
+  for (int i = 0; i < MAX_PROBE_DISTANCE; i++) {
+    int idx = (hash + i) % CHUNK_CACHE_SIZE;
+    uint16_t age = (uint16_t)(cache_lru_clock - chunk_cache[idx].lru_counter);
+    if (age > oldest_age) {
+      oldest_age = age;
+      oldest_idx = idx;
     }
   }
 
-  /* Fallback: evict at clock_hand position */
-  int idx = clock_hand;
-  clock_hand = (clock_hand + 1) % CHUNK_CACHE_SIZE;
-  return idx;
+  return oldest_idx;
 }
 
 /* Internal: Generate chunk section without caching (original algorithm) */

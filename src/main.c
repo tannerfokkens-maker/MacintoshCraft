@@ -773,6 +773,9 @@ int main () {
 
   }
 
+  // Save world data to disk before closing
+  writeAllDataToDisk();
+
   close(server_fd);
 
   #ifdef MAC68K_PLATFORM

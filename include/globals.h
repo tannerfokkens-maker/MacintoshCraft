@@ -96,18 +96,6 @@
   #define SYNC_WORLD_TO_DISK
 #endif
 
-// The minimum interval (in microseconds) at which certain data is written
-// to disk/flash. Bounded on the low end by TIME_BETWEEN_TICKS. By default,
-// applies only to player data. Block changes are written as soon as they
-// are made, but in much smaller portions. Set DISK_SYNC_BLOCKS_ON_INTERVAL
-// to make this apply to block changes as well.
-#define DISK_SYNC_INTERVAL 15000000
-
-// Whether to sync block changes to disk on an interval, instead of syncing
-// on each change. On systems with fast random disk access, this shouldn't
-// be necessary.
-// #define DISK_SYNC_BLOCKS_ON_INTERVAL
-
 // Time in microseconds to spend waiting for data transmission before
 // timing out. Default is 15s, which leaves 5s to prevent starving other
 // clients from Keep Alive packets.
