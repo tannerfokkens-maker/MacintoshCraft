@@ -13,6 +13,7 @@
 #include "tools.h"
 #include "registries.h"
 #include "serialize.h"
+#include "procedures.h"
 
 // Restores world data from disk, or writes world file if it doesn't exist
 int initSerializer () {
@@ -50,6 +51,12 @@ int initSerializer () {
       if (block_changes[i].block == B_chest) i += 14;
       if (i >= block_changes_count) block_changes_count = i + 1;
     }
+
+    #ifdef USE_SORTED_BLOCK_CHANGES
+    // Sort block changes for binary search optimization
+    sortBlockChanges();
+    #endif
+
     // Seek past block changes to start reading player data
     if (fseek(file, sizeof(block_changes), SEEK_SET) != 0) {
       perror("Failed to seek to player data in \"world.bin\". Aborting.");

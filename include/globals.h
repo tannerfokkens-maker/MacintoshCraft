@@ -147,6 +147,14 @@
 // If defined, players are able to receive damage from nearby cacti.
 #define ENABLE_CACTUS_DAMAGE
 
+// If defined, uses binary search for block change lookups instead of linear
+// search. This dramatically improves performance with many block changes
+// (O(log n) vs O(n)), but is incompatible with ALLOW_CHESTS as chests
+// require contiguous entries in the block_changes array.
+#if !defined(ALLOW_CHESTS)
+  #define USE_SORTED_BLOCK_CHANGES
+#endif
+
 // If defined, logs unrecognized packet IDs
 // #define DEV_LOG_UNKNOWN_PACKETS
 

@@ -26,6 +26,49 @@
 
 int client_states[MAX_PLAYERS * 2];
 
+#ifdef USE_SORTED_BLOCK_CHANGES
+/*
+ * Comparison function for qsort - sorts block changes by coordinates
+ */
+static int compareBlockChangeQsort(const void *a, const void *b) {
+    const BlockChange *ba = (const BlockChange *)a;
+    const BlockChange *bb = (const BlockChange *)b;
+
+    /* Push 0xFF entries to the end */
+    if (ba->block == 0xFF && bb->block != 0xFF) return 1;
+    if (ba->block != 0xFF && bb->block == 0xFF) return -1;
+    if (ba->block == 0xFF && bb->block == 0xFF) return 0;
+
+    /* Compare by x, z, y */
+    if (ba->x != bb->x) return (ba->x < bb->x) ? -1 : 1;
+    if (ba->z != bb->z) return (ba->z < bb->z) ? -1 : 1;
+    if (ba->y != bb->y) return (ba->y < bb->y) ? -1 : 1;
+    return 0;
+}
+
+/*
+ * Sort and compact block_changes array.
+ * Call this after loading from disk to enable binary search.
+ */
+void sortBlockChanges(void) {
+    if (block_changes_count == 0) return;
+
+    /* Sort the array */
+    qsort(block_changes, block_changes_count, sizeof(BlockChange), compareBlockChangeQsort);
+
+    /* Compact: count valid entries (0xFF entries are now at the end) */
+    int valid_count = 0;
+    for (int i = 0; i < block_changes_count; i++) {
+        if (block_changes[i].block != 0xFF) {
+            valid_count++;
+        } else {
+            break;  /* 0xFF entries are at the end after sort */
+        }
+    }
+    block_changes_count = valid_count;
+}
+#endif /* USE_SORTED_BLOCK_CHANGES */
+
 void setClientState (int client_fd, int new_state) {
   // Look for a client state with a matching file descriptor
   for (int i = 0; i < MAX_PLAYERS * 2; i += 2) {
@@ -490,6 +533,62 @@ void broadcastMobMetadata (int client_fd, int entity_id) {
   free(metadata);
 }
 
+#ifdef USE_SORTED_BLOCK_CHANGES
+
+/*
+ * Compare two block changes by coordinates.
+ * Sort order: x, then z, then y (groups nearby blocks together)
+ */
+static inline int compareBlockChangeCoords(short x1, uint8_t y1, short z1,
+                                           short x2, uint8_t y2, short z2) {
+    if (x1 != x2) return (x1 < x2) ? -1 : 1;
+    if (z1 != z2) return (z1 < z2) ? -1 : 1;
+    if (y1 != y2) return (y1 < y2) ? -1 : 1;
+    return 0;
+}
+
+/*
+ * Binary search for a block change.
+ * Returns the index if found, or -1 if not found.
+ * If insert_pos is not NULL, stores the insertion position.
+ */
+static int binarySearchBlockChange(short x, uint8_t y, short z, int *insert_pos) {
+    int left = 0;
+    int right = block_changes_count - 1;
+
+    while (left <= right) {
+        int mid = left + (right - left) / 2;
+
+        int cmp = compareBlockChangeCoords(
+            x, y, z,
+            block_changes[mid].x,
+            block_changes[mid].y,
+            block_changes[mid].z
+        );
+
+        if (cmp == 0) {
+            return mid;
+        } else if (cmp < 0) {
+            right = mid - 1;
+        } else {
+            left = mid + 1;
+        }
+    }
+
+    if (insert_pos) *insert_pos = left;
+    return -1;
+}
+
+uint8_t getBlockChange (short x, uint8_t y, short z) {
+    int idx = binarySearchBlockChange(x, y, z, NULL);
+    if (idx >= 0) {
+        return block_changes[idx].block;
+    }
+    return 0xFF;
+}
+
+#else /* !USE_SORTED_BLOCK_CHANGES */
+
 uint8_t getBlockChange (short x, uint8_t y, short z) {
   for (int i = 0; i < block_changes_count; i ++) {
     if (block_changes[i].block == 0xFF) continue;
@@ -505,6 +604,8 @@ uint8_t getBlockChange (short x, uint8_t y, short z) {
   }
   return 0xFF;
 }
+
+#endif /* USE_SORTED_BLOCK_CHANGES */
 
 // Handle running out of memory for new block changes
 void failBlockChange (short x, uint8_t y, short z, uint8_t block) {
@@ -523,6 +624,80 @@ void failBlockChange (short x, uint8_t y, short z, uint8_t block) {
   }
 
 }
+
+#ifdef USE_SORTED_BLOCK_CHANGES
+
+uint8_t makeBlockChange (short x, uint8_t y, short z, uint8_t block) {
+
+  // Transmit block update to all in-game clients
+  for (int i = 0; i < MAX_PLAYERS; i ++) {
+    if (player_data[i].client_fd == -1) continue;
+    if (player_data[i].flags & 0x20) continue;
+    sc_blockUpdate(player_data[i].client_fd, x, y, z, block);
+  }
+
+  // Calculate terrain at these coordinates and compare it to the input block.
+  ChunkAnchor anchor = {
+    x / CHUNK_SIZE,
+    z / CHUNK_SIZE
+  };
+  if (x % CHUNK_SIZE < 0) anchor.x --;
+  if (z % CHUNK_SIZE < 0) anchor.z --;
+  anchor.hash = getChunkHash(anchor.x, anchor.z);
+  anchor.biome = getChunkBiome(anchor.x, anchor.z);
+
+  uint8_t is_base_block = block == getTerrainAt(x, y, z, anchor);
+
+  // Use binary search to find existing entry or insertion point
+  int insert_pos;
+  int existing = binarySearchBlockChange(x, y, z, &insert_pos);
+
+  if (existing >= 0) {
+    // Entry exists - update or delete it
+    if (is_base_block) {
+      // Restoring to base terrain - remove entry by shifting left
+      for (int i = existing; i < block_changes_count - 1; i++) {
+        block_changes[i] = block_changes[i + 1];
+      }
+      block_changes_count--;
+      // Invalidate cache for this chunk
+      invalidateChunkCache(x, y, z);
+    } else {
+      // Update existing entry
+      block_changes[existing].block = block;
+      invalidateChunkCache(x, y, z);
+    }
+    return 0;
+  }
+
+  // Entry doesn't exist
+  if (is_base_block) return 0;  // Nothing to do
+
+  // Check for space
+  if (block_changes_count >= MAX_BLOCK_CHANGES) {
+    failBlockChange(x, y, z, block);
+    return 1;
+  }
+
+  // Insert new entry at sorted position - shift right to make room
+  for (int i = block_changes_count; i > insert_pos; i--) {
+    block_changes[i] = block_changes[i - 1];
+  }
+
+  // Insert new entry
+  block_changes[insert_pos].x = x;
+  block_changes[insert_pos].y = y;
+  block_changes[insert_pos].z = z;
+  block_changes[insert_pos].block = block;
+  block_changes_count++;
+
+  // Invalidate cache for this chunk
+  invalidateChunkCache(x, y, z);
+
+  return 0;
+}
+
+#else /* !USE_SORTED_BLOCK_CHANGES */
 
 uint8_t makeBlockChange (short x, uint8_t y, short z, uint8_t block) {
 
@@ -578,17 +753,11 @@ uint8_t makeBlockChange (short x, uint8_t y, short z, uint8_t block) {
         if (block == B_chest) {
           block_changes[i].block = 0xFF;
           if (first_gap > i) first_gap = i;
-          #ifndef DISK_SYNC_BLOCKS_ON_INTERVAL
-          writeBlockChangesToDisk(i, i);
-          #endif
           break;
         }
         #endif
         block_changes[i].block = block;
       }
-      #ifndef DISK_SYNC_BLOCKS_ON_INTERVAL
-      writeBlockChangesToDisk(i, i);
-      #endif
       return 0;
     }
   }
@@ -627,10 +796,6 @@ uint8_t makeBlockChange (short x, uint8_t y, short z, uint8_t block) {
       if (i >= block_changes_count) {
         block_changes_count = i + 1;
       }
-      // Write changes to disk (if applicable)
-      #ifndef DISK_SYNC_BLOCKS_ON_INTERVAL
-      writeBlockChangesToDisk(last_real_entry + 1, last_real_entry + 15);
-      #endif
       return 0;
     }
     // If we're here, no changes were made
@@ -650,10 +815,6 @@ uint8_t makeBlockChange (short x, uint8_t y, short z, uint8_t block) {
   block_changes[first_gap].y = y;
   block_changes[first_gap].z = z;
   block_changes[first_gap].block = block;
-  // Write change to disk (if applicable)
-  #ifndef DISK_SYNC_BLOCKS_ON_INTERVAL
-  writeBlockChangesToDisk(first_gap, first_gap);
-  #endif
   // Extend future search range if we've appended to the end
   if (first_gap == block_changes_count) {
     block_changes_count ++;
@@ -661,6 +822,8 @@ uint8_t makeBlockChange (short x, uint8_t y, short z, uint8_t block) {
 
   return 0;
 }
+
+#endif /* USE_SORTED_BLOCK_CHANGES */
 
 // Returns the result of mining a block, taking into account the block type and tools
 // Probability numbers obtained with this formula: N = floor(P * (2 ^ 32))
