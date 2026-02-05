@@ -63,4 +63,8 @@ uint64_t splitmix64 (uint64_t state);
 // Returns 1 if action packets found, 0 otherwise
 int hasActionPacketWaiting (int client_fd);
 
+// Check if more movement packets are queued after the current one
+// Returns 1 if more movement packets are waiting, 0 otherwise
+int hasMoreMovementPackets (int client_fd);
+
 #endif

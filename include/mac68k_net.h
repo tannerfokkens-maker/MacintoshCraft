@@ -1,7 +1,7 @@
 /*
- * mac68k_net.h - MacTCP networking for 68k Macintosh
+ * mac68k_net.h - Open Transport networking for 68k Macintosh
  *
- * Provides BSD socket-like API for classic Mac OS using MacTCP.
+ * Provides BSD socket-like API for classic Mac OS using Open Transport.
  */
 
 #ifndef MAC68K_NET_H
@@ -84,10 +84,10 @@ uint32_t htonl(uint32_t hostlong);
 uint16_t ntohs(uint16_t netshort);
 uint32_t ntohl(uint32_t netlong);
 
-/* Open Transport cleanup (alias for cleanup_mactcp) */
+/* Open Transport cleanup */
 void cleanup_open_transport(void);
 
-/* MacTCP cleanup */
+/* Legacy cleanup alias (calls cleanup_open_transport) */
 void cleanup_mactcp(void);
 
 #endif /* MAC68K_PLATFORM */

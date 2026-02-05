@@ -223,6 +223,14 @@ void handlePacket (int client_fd, int length, int packet_id, int state) {
           break;
         }
 
+        // Skip stale movement packets - if more movement packets are queued,
+        // discard this one and use the more recent position data instead.
+        // This prevents queue buildup when the server can't keep up.
+        if (hasMoreMovementPackets(client_fd)) {
+          discard_all(client_fd, length, false);
+          break;
+        }
+
         double x, y, z;
         float yaw, pitch;
         uint8_t on_ground;
@@ -747,6 +755,46 @@ int main () {
     if (recv_count == 0 || (recv_count == -1 && errno != EAGAIN && errno != EWOULDBLOCK)) {
       disconnectClient(&clients[client_index], 4);
       continue;
+    }
+
+    // Fast drain: if more packets are queued for this client, process them
+    // immediately instead of cycling through all client slots first.
+    // This dramatically improves responsiveness when packets queue up.
+    // Limit to 16 packets to ensure fairness with multiple players.
+    {
+      int packets_drained = 0;
+      const int max_drain = 16;
+
+      while (packets_drained < max_drain) {
+        // Check if more data is available
+        recv_count = recv(client_fd, recv_buffer, 2, MSG_PEEK);
+        if (recv_count < 2) break;
+
+        // Yield periodically to keep system responsive
+        if ((packets_drained & 3) == 3) task_yield();
+
+        // Read next packet
+        length = readVarInt(client_fd);
+        if (length == VARNUM_ERROR) {
+          disconnectClient(&clients[client_index], 2);
+          break;
+        }
+        packet_id = readVarInt(client_fd);
+        if (packet_id == VARNUM_ERROR) {
+          disconnectClient(&clients[client_index], 3);
+          break;
+        }
+
+        state = getClientState(client_fd);
+        handlePacket(client_fd, length - sizeVarInt(packet_id), packet_id, state);
+
+        if (recv_count == 0 || (recv_count == -1 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+          disconnectClient(&clients[client_index], 4);
+          break;
+        }
+
+        packets_drained++;
+      }
     }
 
   }

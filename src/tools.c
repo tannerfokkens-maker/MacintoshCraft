@@ -140,6 +140,90 @@ ssize_t recv_all (int client_fd, void *buf, size_t n, uint8_t require_first) {
   return total; // got exactly n bytes
 }
 
+// Drain stale movement packets from receive buffer during send waits.
+// Prevents receive queue buildup while blocked on slow sends.
+static void drain_stale_movement_packets(int client_fd) {
+  uint8_t peek_buf[32];
+
+  // Keep draining while there are movement packets to skip
+  while (1) {
+    #ifdef _WIN32
+      ssize_t peeked = recv(client_fd, (char *)peek_buf, sizeof(peek_buf), MSG_PEEK);
+    #else
+      ssize_t peeked = recv(client_fd, peek_buf, sizeof(peek_buf), MSG_PEEK);
+    #endif
+
+    if (peeked <= 2) return;
+
+    // Parse varint length
+    int pos = 0;
+    int length = 0;
+    int shift = 0;
+
+    while (pos < peeked && pos < 4) {
+      uint8_t byte = peek_buf[pos++];
+      length |= (byte & 0x7F) << shift;
+      if (!(byte & 0x80)) break;
+      shift += 7;
+    }
+
+    if (pos >= peeked) return;
+
+    // Parse packet ID
+    int packet_id = 0;
+    shift = 0;
+    int id_start = pos;
+
+    while (pos < peeked) {
+      uint8_t byte = peek_buf[pos++];
+      packet_id |= (byte & 0x7F) << shift;
+      if (!(byte & 0x80)) break;
+      shift += 7;
+    }
+
+    // Only drain if this is a movement packet (0x1D-0x20) AND more packets follow
+    if (packet_id < 0x1D || packet_id > 0x20) return;
+
+    // Check if there's another packet after this one
+    int total_packet_len = id_start + length;
+
+    // Peek further to see if there's more data after this packet
+    #ifdef _WIN32
+      ssize_t more = recv(client_fd, (char *)peek_buf, total_packet_len + 1, MSG_PEEK);
+    #else
+      ssize_t more = recv(client_fd, peek_buf,
+                          total_packet_len + 1 > (int)sizeof(peek_buf) ? sizeof(peek_buf) : total_packet_len + 1,
+                          MSG_PEEK);
+    #endif
+
+    // Only discard if more data is waiting (don't drop the last position update)
+    if (more <= total_packet_len) return;
+
+    // Consume and discard this stale movement packet
+    #ifdef _WIN32
+      recv(client_fd, (char *)peek_buf, total_packet_len > (int)sizeof(peek_buf) ? sizeof(peek_buf) : total_packet_len, 0);
+      if (total_packet_len > (int)sizeof(peek_buf)) {
+        // Drain rest in chunks
+        int remaining = total_packet_len - sizeof(peek_buf);
+        while (remaining > 0) {
+          int chunk = remaining > (int)sizeof(peek_buf) ? sizeof(peek_buf) : remaining;
+          recv(client_fd, (char *)peek_buf, chunk, 0);
+          remaining -= chunk;
+        }
+      }
+    #else
+      // Drain the full packet
+      int remaining = total_packet_len;
+      while (remaining > 0) {
+        int chunk = remaining > (int)sizeof(peek_buf) ? sizeof(peek_buf) : remaining;
+        ssize_t got = recv(client_fd, peek_buf, chunk, 0);
+        if (got <= 0) return;
+        remaining -= got;
+      }
+    #endif
+  }
+}
+
 ssize_t send_all (int client_fd, const void *buf, ssize_t len) {
   PROF_START(NET_SEND);
   // Treat any input buffer as *uint8_t for simplicity
@@ -181,6 +265,8 @@ ssize_t send_all (int client_fd, const void *buf, ssize_t len) {
         PROF_END(NET_SEND);
         return -1;
       }
+      // While waiting for send buffer to drain, prevent receive queue buildup
+      drain_stale_movement_packets(client_fd);
       task_yield();
       continue;
     }
@@ -381,6 +467,51 @@ int64_t get_program_time () {
   #endif
 }
 #endif
+
+// Check if more movement packets are queued after the current one.
+// Used to skip stale position packets and prevent queue buildup.
+// Returns 1 if more movement packets are waiting, 0 otherwise.
+int hasMoreMovementPackets (int client_fd) {
+  // Peek a small amount - we just need to see the next packet
+  uint8_t peek_buf[16];
+
+  #ifdef _WIN32
+    ssize_t peeked = recv(client_fd, (char *)peek_buf, sizeof(peek_buf), MSG_PEEK);
+  #else
+    ssize_t peeked = recv(client_fd, peek_buf, sizeof(peek_buf), MSG_PEEK);
+  #endif
+
+  if (peeked <= 2) return 0;
+
+  // Parse varint length
+  int pos = 0;
+  int length = 0;
+  int shift = 0;
+
+  while (pos < peeked) {
+    uint8_t byte = peek_buf[pos++];
+    length |= (byte & 0x7F) << shift;
+    if (!(byte & 0x80)) break;
+    shift += 7;
+    if (pos > 3) return 0; // Invalid varint
+  }
+
+  if (pos >= peeked) return 0;
+
+  // Parse packet ID (next varint)
+  int packet_id = 0;
+  shift = 0;
+
+  while (pos < peeked) {
+    uint8_t byte = peek_buf[pos++];
+    packet_id |= (byte & 0x7F) << shift;
+    if (!(byte & 0x80)) break;
+    shift += 7;
+  }
+
+  // Movement packets are 0x1D, 0x1E, 0x1F, 0x20
+  return (packet_id >= 0x1D && packet_id <= 0x20);
+}
 
 // Check if high-priority action packets are waiting in the socket buffer.
 // Peeks ahead in the receive buffer to find packet IDs for mining/placing.
