@@ -31,5 +31,13 @@ set_target_properties(bareiron PROPERTIES
     LINK_FLAGS "-Wl,-gc-sections"
 )
 
-# Link Open Transport libraries (order matters - dependencies after dependents)
-target_link_libraries(bareiron OpenTransportApp OpenTransport OpenTptInet retrocrt Interface)
+# Link networking libraries (both OT and MacTCP for runtime detection)
+# Order matters - dependencies after dependents
+target_link_libraries(bareiron
+    OpenTransportApp
+    OpenTransport
+    OpenTptInet
+    MacTCPHelper
+    retrocrt
+    Interface
+)

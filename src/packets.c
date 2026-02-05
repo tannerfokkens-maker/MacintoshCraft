@@ -192,7 +192,7 @@ int sc_finishConfiguration (int client_fd) {
 // S->C Login (play)
 int sc_loginPlay (int client_fd) {
 
-  writeVarInt(client_fd, 47 + sizeVarInt(MAX_PLAYERS) + sizeVarInt(VIEW_DISTANCE) * 2);
+  writeVarInt(client_fd, 47 + sizeVarInt(MAX_PLAYERS) + sizeVarInt(view_distance) * 2);
   writeByte(client_fd, 0x2B);
   // entity id
   writeUint32(client_fd, client_fd);
@@ -206,9 +206,9 @@ int sc_loginPlay (int client_fd) {
   // maxplayers
   writeVarInt(client_fd, MAX_PLAYERS);
   // view distance
-  writeVarInt(client_fd, VIEW_DISTANCE);
+  writeVarInt(client_fd, view_distance);
   // sim distance
-  writeVarInt(client_fd, VIEW_DISTANCE);
+  writeVarInt(client_fd, view_distance);
   // reduced debug info
   writeByte(client_fd, 0);
   // respawn screen
@@ -338,6 +338,9 @@ int sc_setCenterChunk (int client_fd, int x, int y) {
 int sc_chunkDataAndUpdateLight (int client_fd, int _x, int _z) {
   PROF_START(CHUNK_GEN);
 
+  /* Enable packet buffering - batches small writes for efficiency */
+  packet_start(client_fd);
+
   const int chunk_data_size = (4101 + sizeVarInt(256) + sizeof(network_block_palette)) * 20 + 6 * 12;
   const int light_data_size = 14 + (sizeVarInt(2048) + 2048) * 26;
 
@@ -370,7 +373,8 @@ int sc_chunkDataAndUpdateLight (int client_fd, int _x, int _z) {
     writeUint16(client_fd, 4096); // block count
     writeByte(client_fd, 8); // bits per entry
     writeVarInt(client_fd, 256); // block palette length
-    // block palette as varint buffer
+    // block palette as varint buffer - flush before large send
+    packet_flush_continue();
     send_all(client_fd, network_block_palette, sizeof(network_block_palette));
     // chunk section buffer
     uint8_t biome = buildChunkSection(x, y, z);
@@ -406,12 +410,15 @@ int sc_chunkDataAndUpdateLight (int client_fd, int _x, int _z) {
   writeVarInt(client_fd, 26);
   for (int i = 0; i < 2048; i ++) chunk_section[i] = 0xFF;
   for (int i = 2048; i < 4096; i ++) chunk_section[i] = 0;
+  packet_flush_continue();  // flush before light data sends
   for (int i = 0; i < 8; i ++) {
     writeVarInt(client_fd, 2048);
+    packet_flush_continue();
     send_all(client_fd, chunk_section + 2048, 2048);
   }
   for (int i = 0; i < 18; i ++) {
     writeVarInt(client_fd, 2048);
+    packet_flush_continue();
     send_all(client_fd, chunk_section, 2048);
   }
   // don't send block light
@@ -432,6 +439,7 @@ int sc_chunkDataAndUpdateLight (int client_fd, int _x, int _z) {
     sc_blockUpdate(client_fd, block_changes[i].x, block_changes[i].y, block_changes[i].z, block_changes[i].block);
   }
 
+  packet_flush();  // flush remaining buffered data
   PROF_END(CHUNK_GEN);
   return 0;
 

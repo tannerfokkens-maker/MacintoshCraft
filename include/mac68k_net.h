@@ -28,9 +28,26 @@ typedef long ssize_t;
 #define MSG_PEEK      0x02
 #define MSG_NOSIGNAL  0x4000
 
+#ifndef O_NONBLOCK
 #define O_NONBLOCK    0x0004
+#endif
+#ifndef F_GETFL
 #define F_GETFL       3
+#endif
+#ifndef F_SETFL
 #define F_SETFL       4
+#endif
+
+/* Shutdown constants */
+#ifndef SHUT_RD
+#define SHUT_RD       0
+#endif
+#ifndef SHUT_WR
+#define SHUT_WR       1
+#endif
+#ifndef SHUT_RDWR
+#define SHUT_RDWR     2
+#endif
 
 /* Error codes */
 #define EAGAIN        35
@@ -89,6 +106,15 @@ void cleanup_open_transport(void);
 
 /* Legacy cleanup alias (calls cleanup_open_transport) */
 void cleanup_mactcp(void);
+
+/* Network stack selection */
+int net_is_open_transport_available(void);
+int net_is_using_open_transport(void);
+int net_get_selected_stack(void);   /* Get user's selected stack (1=OT, 0=MacTCP) */
+int net_set_stack(int use_ot);      /* 1 for OT, 0 for MacTCP */
+void net_shutdown(void);            /* Stop server to allow stack switch */
+int net_needs_restart(void);        /* Check if server needs restart */
+void net_clear_restart(void);       /* Clear restart flag after restarting */
 
 #endif /* MAC68K_PLATFORM */
 

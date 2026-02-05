@@ -43,7 +43,8 @@
 #define GAMEMODE 0
 
 // Max render distance, determines how many chunks to send
-#define VIEW_DISTANCE 1
+// Runtime configurable via menu on Mac
+extern int view_distance;
 
 // Time between server ticks in microseconds (default = 1s)
 #define TIME_BETWEEN_TICKS 1000000

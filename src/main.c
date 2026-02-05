@@ -373,8 +373,8 @@ void handlePacket (int client_fd, int length, int packet_id, int state) {
         if ((r & 3) == 0) {
           // The mob is placed in the middle of the new chunk row,
           // at a random position within the chunk
-          short mob_x = (_x + dx * VIEW_DISTANCE) * 16 + ((r >> 4) & 15);
-          short mob_z = (_z + dz * VIEW_DISTANCE) * 16 + ((r >> 8) & 15);
+          short mob_x = (_x + dx * view_distance) * 16 + ((r >> 4) & 15);
+          short mob_z = (_z + dz * view_distance) * 16 + ((r >> 8) & 15);
           // Start at the Y coordinate of the spawning player and move upward
           // until a valid space is found
           uint8_t mob_y = cy - 8;
@@ -418,21 +418,21 @@ void handlePacket (int client_fd, int length, int packet_id, int state) {
 
         PROF_START(CHUNK_SEND);
         while (dx != 0) {
-          sc_chunkDataAndUpdateLight(client_fd, _x + dx * VIEW_DISTANCE, _z);
+          sc_chunkDataAndUpdateLight(client_fd, _x + dx * view_distance, _z);
           count ++;
-          for (int i = 1; i <= VIEW_DISTANCE; i ++) {
-            sc_chunkDataAndUpdateLight(client_fd, _x + dx * VIEW_DISTANCE, _z - i);
-            sc_chunkDataAndUpdateLight(client_fd, _x + dx * VIEW_DISTANCE, _z + i);
+          for (int i = 1; i <= view_distance; i ++) {
+            sc_chunkDataAndUpdateLight(client_fd, _x + dx * view_distance, _z - i);
+            sc_chunkDataAndUpdateLight(client_fd, _x + dx * view_distance, _z + i);
             count += 2;
           }
           dx += dx > 0 ? -1 : 1;
         }
         while (dz != 0) {
-          sc_chunkDataAndUpdateLight(client_fd, _x, _z + dz * VIEW_DISTANCE);
+          sc_chunkDataAndUpdateLight(client_fd, _x, _z + dz * view_distance);
           count ++;
-          for (int i = 1; i <= VIEW_DISTANCE; i ++) {
-            sc_chunkDataAndUpdateLight(client_fd, _x - i, _z + dz * VIEW_DISTANCE);
-            sc_chunkDataAndUpdateLight(client_fd, _x + i, _z + dz * VIEW_DISTANCE);
+          for (int i = 1; i <= view_distance; i ++) {
+            sc_chunkDataAndUpdateLight(client_fd, _x - i, _z + dz * view_distance);
+            sc_chunkDataAndUpdateLight(client_fd, _x + i, _z + dz * view_distance);
             count += 2;
           }
           dz += dz > 0 ? -1 : 1;
@@ -662,6 +662,30 @@ int main () {
     #ifdef MAC68K_PLATFORM
       // Check for quit request (Cmd-Q)
       if (console_should_quit()) break;
+
+      // Check if server needs restart (after Stop Server menu)
+      if (net_needs_restart()) {
+        console_print("Restarting server...\r");
+        close(server_fd);
+
+        server_fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (server_fd == -1) {
+          console_print("ERROR: socket() failed on restart\r");
+          break;
+        }
+        setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+          console_print("ERROR: bind() failed on restart\r");
+          break;
+        }
+        if (listen(server_fd, 5) < 0) {
+          console_print("ERROR: listen() failed on restart\r");
+          break;
+        }
+        fcntl(server_fd, F_SETFL, fcntl(server_fd, F_GETFL, 0) | O_NONBLOCK);
+        net_clear_restart();
+        console_printf("Server restarted on port %d\r", PORT);
+      }
     #endif
 
     // Attempt to accept a new connection

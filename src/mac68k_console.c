@@ -21,24 +21,37 @@
 #include <string.h>
 
 #include "mac68k_console.h"
+#include "mac68k_net.h"
 #include "profiler.h"
+#include "globals.h"
 
 /* Font constants - Monaco is font ID 4 */
 #define kFontMonaco 4
 
 /* Menu IDs */
-#define MENU_APPLE 128
-#define MENU_FILE  129
-#define MENU_DEBUG 130
+#define MENU_APPLE  128
+#define MENU_FILE   129
+#define MENU_SERVER 130
+#define MENU_DEBUG  131
 
 /* Menu item IDs */
 #define ITEM_ABOUT          1
 
 #define ITEM_FILE_QUIT      1
 
+#define ITEM_SERVER_VD1     1
+#define ITEM_SERVER_VD2     2
+#define ITEM_SERVER_VD3     3
+#define ITEM_SERVER_VD4     4
+
 #define ITEM_DEBUG_PROFILE  1
 #define ITEM_DEBUG_SAVE     2
 #define ITEM_DEBUG_RESET    3
+#define ITEM_DEBUG_SEP1     4  /* Separator */
+#define ITEM_DEBUG_USE_OT   5
+#define ITEM_DEBUG_USE_TCP  6
+#define ITEM_DEBUG_SEP2     7  /* Separator */
+#define ITEM_DEBUG_RESTART  8
 
 /* Console state */
 static WindowPtr g_console_window = NULL;
@@ -49,6 +62,7 @@ static int g_line_count = 0;
 /* Menu handles */
 static MenuHandle g_apple_menu = NULL;
 static MenuHandle g_file_menu = NULL;
+static MenuHandle g_server_menu = NULL;
 static MenuHandle g_debug_menu = NULL;
 
 /* Maximum lines before we start clearing old content */
@@ -61,6 +75,23 @@ static MenuHandle g_debug_menu = NULL;
 /* Forward declarations */
 static void setup_menus(void);
 static void handle_menu_choice(long menu_choice);
+static void update_view_distance_checkmarks(void);
+static void update_net_stack_checkmarks(void);
+
+/* Update checkmarks on view distance menu items */
+static void update_view_distance_checkmarks(void) {
+    CheckItem(g_server_menu, ITEM_SERVER_VD1, view_distance == 1);
+    CheckItem(g_server_menu, ITEM_SERVER_VD2, view_distance == 2);
+    CheckItem(g_server_menu, ITEM_SERVER_VD3, view_distance == 3);
+    CheckItem(g_server_menu, ITEM_SERVER_VD4, view_distance == 4);
+}
+
+/* Update checkmarks on network stack menu items */
+static void update_net_stack_checkmarks(void) {
+    int selected_ot = net_get_selected_stack();
+    CheckItem(g_debug_menu, ITEM_DEBUG_USE_OT, selected_ot);
+    CheckItem(g_debug_menu, ITEM_DEBUG_USE_TCP, !selected_ot);
+}
 
 /* Set up the menu bar */
 static void setup_menus(void) {
@@ -76,12 +107,31 @@ static void setup_menus(void) {
     AppendMenu(g_file_menu, "\pQuit/Q");
     InsertMenu(g_file_menu, 0);
 
+    /* Create Server menu */
+    g_server_menu = NewMenu(MENU_SERVER, "\pServer");
+    AppendMenu(g_server_menu, "\pView Distance: 1/1");
+    AppendMenu(g_server_menu, "\pView Distance: 2/2");
+    AppendMenu(g_server_menu, "\pView Distance: 3/3");
+    AppendMenu(g_server_menu, "\pView Distance: 4/4");
+    InsertMenu(g_server_menu, 0);
+    update_view_distance_checkmarks();
+
     /* Create Debug menu */
     g_debug_menu = NewMenu(MENU_DEBUG, "\pDebug");
     AppendMenu(g_debug_menu, "\pEnable Profiling/P");
     AppendMenu(g_debug_menu, "\pSave Report/R");
     AppendMenu(g_debug_menu, "\pReset Stats");
+    AppendMenu(g_debug_menu, "\p(-");  /* Separator */
+    AppendMenu(g_debug_menu, "\pUse Open Transport");
+    AppendMenu(g_debug_menu, "\pUse MacTCP");
+    AppendMenu(g_debug_menu, "\p(-");  /* Separator */
+    AppendMenu(g_debug_menu, "\pRestart Server");
+    /* Disable OT option if not available */
+    if (!net_is_open_transport_available()) {
+        DisableItem(g_debug_menu, ITEM_DEBUG_USE_OT);
+    }
     InsertMenu(g_debug_menu, 0);
+    update_net_stack_checkmarks();
 
     DrawMenuBar();
 }
@@ -112,6 +162,14 @@ static void handle_menu_choice(long menu_choice) {
             }
             break;
 
+        case MENU_SERVER:
+            if (item_id >= ITEM_SERVER_VD1 && item_id <= ITEM_SERVER_VD4) {
+                view_distance = item_id;  /* VD1=1, VD2=2, etc. */
+                update_view_distance_checkmarks();
+                console_printf("View distance set to %d\r", view_distance);
+            }
+            break;
+
         case MENU_DEBUG:
             switch (item_id) {
                 case ITEM_DEBUG_PROFILE:
@@ -125,6 +183,19 @@ static void handle_menu_choice(long menu_choice) {
                 case ITEM_DEBUG_RESET:
                     prof_reset();
                     console_print("Profiler stats reset\r");
+                    break;
+                case ITEM_DEBUG_USE_OT:
+                    if (net_set_stack(1) == 0) {
+                        update_net_stack_checkmarks();
+                    }
+                    break;
+                case ITEM_DEBUG_USE_TCP:
+                    if (net_set_stack(0) == 0) {
+                        update_net_stack_checkmarks();
+                    }
+                    break;
+                case ITEM_DEBUG_RESTART:
+                    net_shutdown();
                     break;
             }
             break;
