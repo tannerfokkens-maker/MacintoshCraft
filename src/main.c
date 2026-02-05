@@ -48,6 +48,7 @@
 #include "registries.h"
 #include "procedures.h"
 #include "serialize.h"
+#include "profiler.h"
 
 /**
  * Routes an incoming packet to its packet handler or procedure.
@@ -215,6 +216,13 @@ void handlePacket (int client_fd, int length, int packet_id, int state) {
     case 0x20:
       if (state == STATE_PLAY) {
 
+        // Skip movement processing if action packets are waiting
+        // This prioritizes responsiveness for mining/placing over smooth movement
+        if (hasActionPacketWaiting(client_fd)) {
+          discard_all(client_fd, length, false);
+          break;
+        }
+
         double x, y, z;
         float yaw, pitch;
         uint8_t on_ground;
@@ -251,50 +259,11 @@ void handlePacket (int client_fd, int length, int packet_id, int state) {
           player->pitch = pitch / 90.0f * 127.0f;
         }
 
-        // Whether to broadcast player position to other players
-        uint8_t should_broadcast = true;
-
-        #ifndef BROADCAST_ALL_MOVEMENT
-          // If applicable, tie movement updates to the tickrate by using
-          // a flag that gets reset on every tick. It might sound better
-          // to just make the tick handler broadcast position updates, but
-          // then we lose precision. While position is stored using integers,
-          // here the client gives us doubles and floats directly.
-          should_broadcast = !(player->flags & 0x40);
-          if (should_broadcast) player->flags |= 0x40;
-        #endif
-
-        #ifdef SCALE_MOVEMENT_UPDATES_TO_PLAYER_COUNT
-          // If applicable, broadcast only every client_count-th movement update
-          if (++player->packets_since_update < client_count) {
-            should_broadcast = false;
-          } else {
-            // Note that this does not explicitly set should_broadcast to true
-            // This allows the above BROADCAST_ALL_MOVEMENT check to compound
-            // Whether that's ever favorable is up for debate
-            player->packets_since_update = 0;
-          }
-        #endif
-
-        if (should_broadcast) {
-          // If the packet had no rotation data, calculate it from player data
-          if (packet_id == 0x1D) {
-            yaw = player->yaw * 180 / 127;
-            pitch = player->pitch * 90 / 127;
-          }
-          // Send current position data to all connected players
-          for (int i = 0; i < MAX_PLAYERS; i ++) {
-            if (player_data[i].client_fd == -1) continue;
-            if (player_data[i].flags & 0x20) continue;
-            if (player_data[i].client_fd == client_fd) continue;
-            if (packet_id == 0x1F) {
-              sc_updateEntityRotation(player_data[i].client_fd, client_fd, player->yaw, player->pitch);
-            } else {
-              sc_teleportEntity(player_data[i].client_fd, client_fd, x, y, z, yaw, pitch);
-            }
-            sc_setHeadRotation(player_data[i].client_fd, client_fd, player->yaw);
-          }
-        }
+        // Mark this player's position as needing broadcast on next server tick.
+        // This defers position updates to reduce network flooding - instead of
+        // broadcasting every movement packet immediately, we batch them per tick.
+        // Tradeoff: loses sub-block precision since player->x/y/z are integers.
+        player->flags |= 0x40;
 
         // Don't continue if all we got was rotation data
         if (packet_id == 0x1F) break;
@@ -407,6 +376,7 @@ void handlePacket (int client_fd, int length, int packet_id, int state) {
 
         sc_setCenterChunk(client_fd, _x, _z);
 
+        PROF_START(CHUNK_SEND);
         while (dx != 0) {
           sc_chunkDataAndUpdateLight(client_fd, _x + dx * VIEW_DISTANCE, _z);
           count ++;
@@ -427,6 +397,7 @@ void handlePacket (int client_fd, int length, int packet_id, int state) {
           }
           dz += dz > 0 ? -1 : 1;
         }
+        PROF_END(CHUNK_SEND);
 
         #ifdef DEV_LOG_CHUNK_GENERATION
           end = clock();
@@ -458,7 +429,11 @@ void handlePacket (int client_fd, int length, int packet_id, int state) {
       break;
 
     case 0x28:
-      if (state == STATE_PLAY) cs_playerAction(client_fd);
+      if (state == STATE_PLAY) {
+        PROF_START(PACKET_ACTION);
+        cs_playerAction(client_fd);
+        PROF_END(PACKET_ACTION);
+      }
       break;
 
     case 0x3F:
@@ -676,7 +651,10 @@ int main () {
     // Handle periodic events (server ticks)
     int64_t time_since_last_tick = get_program_time() - last_tick_time;
     if (time_since_last_tick > TIME_BETWEEN_TICKS) {
+      PROF_START(TICK_TOTAL);
       handleServerTick(time_since_last_tick);
+      PROF_END(TICK_TOTAL);
+      prof_tick_completed(time_since_last_tick);
       last_tick_time = get_program_time();
     }
 

@@ -109,20 +109,6 @@
 // You can change the brand string in the "brand" variable in src/globals.c
 #define SEND_BRAND
 
-// If defined, rebroadcasts ALL incoming movement updates, disconnecting
-// movement from the server's tickrate. This makes movement much smoother
-// on very low tickrates, at the cost of potential network instability when
-// hosting more than just a couple of players. When disabling this on low
-// tickrates, consider disabling SCALE_MOVEMENT_UPDATES_TO_PLAYER_COUNT too.
-#define BROADCAST_ALL_MOVEMENT
-
-// If defined, scales the frequency at which player movement updates are
-// broadcast based on the amount of players, reducing overhead for higher
-// player counts. For very many players, makes movement look jittery.
-// It is not recommended to use this if BROADCAST_ALL_MOVEMENT is disabled
-// on low tickrates, as that might drastically decrease the update rate.
-#define SCALE_MOVEMENT_UPDATES_TO_PLAYER_COUNT
-
 // If defined, calculates fluid flow when blocks are updated near fluids
 // Somewhat computationally expensive and potentially unstable
 #define DO_FLUID_FLOW
@@ -213,9 +199,6 @@ typedef struct {
   short z;
   short visited_x[VISITED_HISTORY];
   short visited_z[VISITED_HISTORY];
-  #ifdef SCALE_MOVEMENT_UPDATES_TO_PLAYER_COUNT
-    uint16_t packets_since_update;
-  #endif
   int8_t yaw;
   int8_t pitch;
   uint8_t grounded_y;
@@ -239,7 +222,7 @@ typedef struct {
   // 0x08 - sprinting
   // 0x10 - eating, makes flagval_16 act as eating timer
   // 0x20 - client loading, uses flagval_16 as fallback timer
-  // 0x40 - movement update cooldown
+  // 0x40 - position dirty, needs broadcast on next tick
   // 0x80 - craft_items lock (for storing pointers)
   uint8_t flags;
 } PlayerData;

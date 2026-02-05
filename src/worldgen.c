@@ -9,6 +9,7 @@
 #include "registries.h"
 #include "procedures.h"
 #include "worldgen.h"
+#include "profiler.h"
 
 uint32_t getChunkHash (short x, short z) {
 

@@ -15,14 +15,30 @@
 #include <ToolUtils.h>
 #include <Memory.h>
 #include <SegLoad.h>
+#include <Devices.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "mac68k_console.h"
+#include "profiler.h"
 
 /* Font constants - Monaco is font ID 4 */
 #define kFontMonaco 4
+
+/* Menu IDs */
+#define MENU_APPLE 128
+#define MENU_FILE  129
+#define MENU_DEBUG 130
+
+/* Menu item IDs */
+#define ITEM_ABOUT          1
+
+#define ITEM_FILE_QUIT      1
+
+#define ITEM_DEBUG_PROFILE  1
+#define ITEM_DEBUG_SAVE     2
+#define ITEM_DEBUG_RESET    3
 
 /* Console state */
 static WindowPtr g_console_window = NULL;
@@ -30,12 +46,92 @@ static TEHandle g_te_handle = NULL;
 static int g_should_quit = 0;
 static int g_line_count = 0;
 
+/* Menu handles */
+static MenuHandle g_apple_menu = NULL;
+static MenuHandle g_file_menu = NULL;
+static MenuHandle g_debug_menu = NULL;
+
 /* Maximum lines before we start clearing old content */
 #define MAX_CONSOLE_LINES 100
 
 /* Window dimensions */
 #define WINDOW_WIDTH 500
 #define WINDOW_HEIGHT 320
+
+/* Forward declarations */
+static void setup_menus(void);
+static void handle_menu_choice(long menu_choice);
+
+/* Set up the menu bar */
+static void setup_menus(void) {
+    /* Create Apple menu */
+    g_apple_menu = NewMenu(MENU_APPLE, "\p\024"); /* Apple symbol */
+    AppendMenu(g_apple_menu, "\pAbout Bareiron...");
+    AppendMenu(g_apple_menu, "\p(-");  /* Separator */
+    AppendResMenu(g_apple_menu, 'DRVR');  /* Add desk accessories */
+    InsertMenu(g_apple_menu, 0);
+
+    /* Create File menu */
+    g_file_menu = NewMenu(MENU_FILE, "\pFile");
+    AppendMenu(g_file_menu, "\pQuit/Q");
+    InsertMenu(g_file_menu, 0);
+
+    /* Create Debug menu */
+    g_debug_menu = NewMenu(MENU_DEBUG, "\pDebug");
+    AppendMenu(g_debug_menu, "\pEnable Profiling/P");
+    AppendMenu(g_debug_menu, "\pSave Report/R");
+    AppendMenu(g_debug_menu, "\pReset Stats");
+    InsertMenu(g_debug_menu, 0);
+
+    DrawMenuBar();
+}
+
+/* Handle menu selection */
+static void handle_menu_choice(long menu_choice) {
+    short menu_id = HiWord(menu_choice);
+    short item_id = LoWord(menu_choice);
+
+    switch (menu_id) {
+        case MENU_APPLE:
+            if (item_id == ITEM_ABOUT) {
+                /* Show simple about message */
+                console_print("\r--- About Bareiron ---\r");
+                console_print("Minecraft server for 68k Mac\r");
+                console_print("Protocol 772 (1.21.8)\r\r");
+            } else {
+                /* Handle desk accessories */
+                Str255 da_name;
+                GetMenuItemText(g_apple_menu, item_id, da_name);
+                OpenDeskAcc(da_name);
+            }
+            break;
+
+        case MENU_FILE:
+            if (item_id == ITEM_FILE_QUIT) {
+                g_should_quit = 1;
+            }
+            break;
+
+        case MENU_DEBUG:
+            switch (item_id) {
+                case ITEM_DEBUG_PROFILE:
+                    prof_toggle();
+                    /* Update checkmark */
+                    CheckItem(g_debug_menu, ITEM_DEBUG_PROFILE, prof_is_enabled());
+                    break;
+                case ITEM_DEBUG_SAVE:
+                    prof_save_report();
+                    break;
+                case ITEM_DEBUG_RESET:
+                    prof_reset();
+                    console_print("Profiler stats reset\r");
+                    break;
+            }
+            break;
+    }
+
+    HiliteMenu(0);  /* Unhighlight menu title */
+}
 
 void console_init(void) {
     Rect window_rect, text_rect;
@@ -88,17 +184,30 @@ void console_init(void) {
     /* Initial message */
     console_print("Bareiron Server for 68k Macintosh\r");
     console_print("==================================\r\r");
+
+    /* Set up menus after window is created */
+    setup_menus();
+
+    /* Initialize profiler */
+    prof_init();
 }
 
 void console_poll_events(void) {
     EventRecord event;
     WindowPtr which_window;
+    long menu_choice;
 
     /* Use WaitNextEvent with zero sleep for minimal latency during networking */
     if (WaitNextEvent(everyEvent, &event, 0, NULL)) {
         switch (event.what) {
             case mouseDown:
                 switch (FindWindow(event.where, &which_window)) {
+                    case inMenuBar:
+                        menu_choice = MenuSelect(event.where);
+                        if (menu_choice != 0) {
+                            handle_menu_choice(menu_choice);
+                        }
+                        break;
                     case inGoAway:
                         if (TrackGoAway(which_window, event.where)) {
                             g_should_quit = 1;
@@ -117,11 +226,12 @@ void console_poll_events(void) {
 
             case keyDown:
             case autoKey:
-                /* Check for Cmd-Q to quit */
+                /* Handle command key shortcuts via MenuKey */
                 if (event.modifiers & cmdKey) {
                     char key = event.message & charCodeMask;
-                    if (key == 'q' || key == 'Q') {
-                        g_should_quit = 1;
+                    menu_choice = MenuKey(key);
+                    if (menu_choice != 0) {
+                        handle_menu_choice(menu_choice);
                     }
                 }
                 break;

@@ -28,7 +28,7 @@ int errno = 0;
 #define MAX_STREAMS 34  /* 1 listener + MAX_PLAYERS clients + margin */
 
 /* MacTCP stream receive buffer size */
-#define STREAM_BUFFER_SIZE 4096
+#define STREAM_BUFFER_SIZE 65536
 
 /* Peek buffer size - enough for protocol header checks */
 #define PEEK_BUFFER_SIZE 16

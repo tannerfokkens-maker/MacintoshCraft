@@ -23,6 +23,7 @@
 #include "structures.h"
 #include "serialize.h"
 #include "procedures.h"
+#include "profiler.h"
 
 int client_states[MAX_PLAYERS * 2];
 
@@ -369,7 +370,10 @@ int givePlayerItem (PlayerData *player, uint16_t item, uint8_t count) {
 
   player->inventory_items[slot] = item;
   player->inventory_count[slot] += count;
+  // sc_setContainerSlot is batch-aware, so this works with external batching
+  PROF_START(INVENTORY_UPDATE);
   sc_setContainerSlot(player->client_fd, 0, serverSlotToClientSlot(0, slot), player->inventory_count[slot], item);
+  PROF_END(INVENTORY_UPDATE);
 
   return 0;
 
@@ -408,15 +412,19 @@ void spawnPlayer (PlayerData *player) {
   }
   player->flags &= ~0x80;
 
-  // Sync client inventory and hotbar
+  // Sync client inventory and hotbar (batched into fewer network sends)
+  packet_start(player->client_fd);
   for (uint8_t i = 0; i < 41; i ++) {
     sc_setContainerSlot(player->client_fd, 0, serverSlotToClientSlot(0, i), player->inventory_count[i], player->inventory_items[i]);
+    // Flush buffer periodically to avoid overflow
+    if ((i & 0x0F) == 0x0F) packet_flush_continue();
   }
   sc_setHeldItem(player->client_fd, player->hotbar);
   // Sync client health and hunger
   sc_setHealth(player->client_fd, player->health, player->hunger, player->saturation);
   // Sync client clock time
   sc_updateTime(player->client_fd, world_time);
+  packet_flush();
 
   #ifdef ENABLE_PLAYER_FLIGHT
   if (GAMEMODE != 1 && GAMEMODE != 3) {
@@ -630,12 +638,15 @@ void failBlockChange (short x, uint8_t y, short z, uint8_t block) {
 uint8_t makeBlockChange (short x, uint8_t y, short z, uint8_t block) {
 
   // Transmit block update to all in-game clients
+  PROF_START(BLOCK_BROADCAST);
   for (int i = 0; i < MAX_PLAYERS; i ++) {
     if (player_data[i].client_fd == -1) continue;
     if (player_data[i].flags & 0x20) continue;
     sc_blockUpdate(player_data[i].client_fd, x, y, z, block);
   }
+  PROF_END(BLOCK_BROADCAST);
 
+  PROF_START(BLOCK_CHANGE);
   // Calculate terrain at these coordinates and compare it to the input block.
   ChunkAnchor anchor = {
     x / CHUNK_SIZE,
@@ -667,14 +678,19 @@ uint8_t makeBlockChange (short x, uint8_t y, short z, uint8_t block) {
       block_changes[existing].block = block;
       invalidateChunkCache(x, y, z);
     }
+    PROF_END(BLOCK_CHANGE);
     return 0;
   }
 
   // Entry doesn't exist
-  if (is_base_block) return 0;  // Nothing to do
+  if (is_base_block) {
+    PROF_END(BLOCK_CHANGE);
+    return 0;  // Nothing to do
+  }
 
   // Check for space
   if (block_changes_count >= MAX_BLOCK_CHANGES) {
+    PROF_END(BLOCK_CHANGE);
     failBlockChange(x, y, z, block);
     return 1;
   }
@@ -694,6 +710,7 @@ uint8_t makeBlockChange (short x, uint8_t y, short z, uint8_t block) {
   // Invalidate cache for this chunk
   invalidateChunkCache(x, y, z);
 
+  PROF_END(BLOCK_CHANGE);
   return 0;
 }
 
@@ -702,11 +719,13 @@ uint8_t makeBlockChange (short x, uint8_t y, short z, uint8_t block) {
 uint8_t makeBlockChange (short x, uint8_t y, short z, uint8_t block) {
 
   // Transmit block update to all in-game clients
+  PROF_START(BLOCK_BROADCAST);
   for (int i = 0; i < MAX_PLAYERS; i ++) {
     if (player_data[i].client_fd == -1) continue;
     if (player_data[i].flags & 0x20) continue;
     sc_blockUpdate(player_data[i].client_fd, x, y, z, block);
   }
+  PROF_END(BLOCK_BROADCAST);
 
   // Calculate terrain at these coordinates and compare it to the input block.
   // Since block changes get overlayed on top of terrain, we don't want to
@@ -1831,16 +1850,35 @@ void handleServerTick (int64_t time_since_last_tick) {
         player->flagval_16 = 0;
       } else player->flagval_16 ++;
     }
-    // Reset movement update cooldown if not broadcasting every update
-    // Effectively ties player movement updates to the tickrate
-    #ifndef BROADCAST_ALL_MOVEMENT
+    // Broadcast deferred position updates (0x40 = position dirty flag)
+    // This batches all movement packets received since last tick into one update
+    if (player->flags & 0x40) {
+      PROF_START(PLAYER_BROADCAST);
       player->flags &= ~0x40;
-    #endif
+      // Convert stored rotation back to degrees
+      float yaw = player->yaw * 180.0f / 127.0f;
+      float pitch = player->pitch * 90.0f / 127.0f;
+      // Send position to all other connected players
+      for (int j = 0; j < MAX_PLAYERS; j ++) {
+        if (player_data[j].client_fd == -1) continue;
+        if (player_data[j].flags & 0x20) continue;
+        if (player_data[j].client_fd == player->client_fd) continue;
+        // Batch teleport + head rotation into single network send
+        packet_start(player_data[j].client_fd);
+        sc_teleportEntity(player_data[j].client_fd, player->client_fd,
+                          player->x, player->y, player->z, yaw, pitch);
+        sc_setHeadRotation(player_data[j].client_fd, player->client_fd, player->yaw);
+        packet_flush();
+      }
+      PROF_END(PLAYER_BROADCAST);
+    }
     // Below this, process events that happen once per second
     if (server_ticks % (uint32_t)TICKS_PER_SECOND != 0) continue;
-    // Send Keep Alive and Update Time packets
+    // Send Keep Alive and Update Time packets (batched together)
+    packet_start(player->client_fd);
     sc_keepAlive(player->client_fd);
     sc_updateTime(player->client_fd, world_time);
+    packet_flush();
     // Tick damage from lava
     uint8_t block = getBlockAt(player->x, player->y, player->z);
     if (block >= B_lava && block < B_lava + 4) {

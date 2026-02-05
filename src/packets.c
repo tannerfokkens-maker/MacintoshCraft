@@ -25,6 +25,7 @@
 #include "crafting.h"
 #include "procedures.h"
 #include "packets.h"
+#include "profiler.h"
 
 // S->C Status Response (server list ping)
 int sc_statusResponse (int client_fd) {
@@ -301,6 +302,8 @@ int sc_playerAbilities (int client_fd, uint8_t flags) {
 // S->C Update Time
 int sc_updateTime (int client_fd, uint64_t ticks) {
 
+  int batching = (packet_buffer_fd == client_fd);
+  if (!batching) packet_start(client_fd);
   writeVarInt(client_fd, 18);
   writeVarInt(client_fd, 0x6A);
 
@@ -309,6 +312,7 @@ int sc_updateTime (int client_fd, uint64_t ticks) {
   writeUint64(client_fd, ticks);
   writeByte(client_fd, true);
 
+  if (!batching) packet_flush();
   return 0;
 }
 
@@ -332,6 +336,7 @@ int sc_setCenterChunk (int client_fd, int x, int y) {
 
 // S->C Chunk Data and Update Light
 int sc_chunkDataAndUpdateLight (int client_fd, int _x, int _z) {
+  PROF_START(CHUNK_GEN);
 
   const int chunk_data_size = (4101 + sizeVarInt(256) + sizeof(network_block_palette)) * 20 + 6 * 12;
   const int light_data_size = 14 + (sizeVarInt(2048) + 2048) * 26;
@@ -427,6 +432,7 @@ int sc_chunkDataAndUpdateLight (int client_fd, int _x, int _z) {
     sc_blockUpdate(client_fd, block_changes[i].x, block_changes[i].y, block_changes[i].z, block_changes[i].block);
   }
 
+  PROF_END(CHUNK_GEN);
   return 0;
 
 }
@@ -434,17 +440,22 @@ int sc_chunkDataAndUpdateLight (int client_fd, int _x, int _z) {
 // S->C Clientbound Keep Alive (play)
 int sc_keepAlive (int client_fd) {
 
+  int batching = (packet_buffer_fd == client_fd);
+  if (!batching) packet_start(client_fd);
   writeVarInt(client_fd, 9);
   writeByte(client_fd, 0x26);
 
   writeUint64(client_fd, 0);
 
+  if (!batching) packet_flush();
   return 0;
 }
 
 // S->C Set Container Slot
 int sc_setContainerSlot (int client_fd, int window_id, uint16_t slot, uint8_t count, uint16_t item) {
 
+  int batching = (packet_buffer_fd == client_fd);
+  if (!batching) packet_start(client_fd);
   writeVarInt(client_fd,
     1 +
     sizeVarInt(window_id) +
@@ -465,24 +476,31 @@ int sc_setContainerSlot (int client_fd, int window_id, uint16_t slot, uint8_t co
     writeVarInt(client_fd, 0);
   }
 
+  if (!batching) packet_flush();
   return 0;
 
 }
 
 // S->C Block Update
 int sc_blockUpdate (int client_fd, int64_t x, int64_t y, int64_t z, uint8_t block) {
+  int batching = (packet_buffer_fd == client_fd);
+  if (!batching) packet_start(client_fd);
   writeVarInt(client_fd, 9 + sizeVarInt(block_palette[block]));
   writeByte(client_fd, 0x08);
   writeUint64(client_fd, ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF));
   writeVarInt(client_fd, block_palette[block]);
+  if (!batching) packet_flush();
   return 0;
 }
 
 // S->C Acknowledge Block Change
 int sc_acknowledgeBlockChange (int client_fd, int sequence) {
+  int batching = (packet_buffer_fd == client_fd);
+  if (!batching) packet_start(client_fd);
   writeVarInt(client_fd, 1 + sizeVarInt(sequence));
   writeByte(client_fd, 0x04);
   writeVarInt(client_fd, sequence);
+  if (!batching) packet_flush();
   return 0;
 }
 
@@ -826,11 +844,14 @@ int cs_setHeldItem (int client_fd) {
 // S->C Set Held Item (clientbound)
 int sc_setHeldItem (int client_fd, uint8_t slot) {
 
+  int batching = (packet_buffer_fd == client_fd);
+  if (!batching) packet_start(client_fd);
   writeVarInt(client_fd, sizeVarInt(0x62) + 1);
   writeVarInt(client_fd, 0x62);
 
   writeByte(client_fd, slot);
 
+  if (!batching) packet_flush();
   return 0;
 }
 
@@ -954,12 +975,14 @@ int sc_spawnEntityPlayer (int client_fd, PlayerData player) {
 
 // S->C Entity Animation
 int sc_entityAnimation (int client_fd, int id, uint8_t animation) {
+  packet_start(client_fd);
   writeVarInt(client_fd, 2 + sizeVarInt(id));
   writeByte(client_fd, 0x02);
 
   writeVarInt(client_fd, id); // Entity ID
   writeByte(client_fd, animation); // Animation
 
+  packet_flush();
   return 0;
 }
 
@@ -970,6 +993,8 @@ int sc_teleportEntity (
   float yaw, float pitch
 ) {
 
+  int batching = (packet_buffer_fd == client_fd);
+  if (!batching) packet_start(client_fd);
   // Packet length and ID
   writeVarInt(client_fd, 58 + sizeVarInt(id));
   writeByte(client_fd, 0x1F);
@@ -990,12 +1015,15 @@ int sc_teleportEntity (
   // On ground flag
   writeByte(client_fd, 1);
 
+  if (!batching) packet_flush();
   return 0;
 }
 
 // S->C Set Head Rotation
 int sc_setHeadRotation (int client_fd, int id, uint8_t yaw) {
 
+  int batching = (packet_buffer_fd == client_fd);
+  if (!batching) packet_start(client_fd);
   // Packet length and ID
   writeByte(client_fd, 2 + sizeVarInt(id));
   writeByte(client_fd, 0x4C);
@@ -1004,6 +1032,7 @@ int sc_setHeadRotation (int client_fd, int id, uint8_t yaw) {
   // Head yaw
   writeByte(client_fd, yaw);
 
+  if (!batching) packet_flush();
   return 0;
 }
 
@@ -1027,6 +1056,7 @@ int sc_updateEntityRotation (int client_fd, int id, uint8_t yaw, uint8_t pitch) 
 // S->C Damage Event
 int sc_damageEvent (int client_fd, int entity_id, int type) {
 
+  packet_start(client_fd);
   writeVarInt(client_fd, 4 + sizeVarInt(entity_id) + sizeVarInt(type));
   writeByte(client_fd, 0x19);
 
@@ -1036,12 +1066,15 @@ int sc_damageEvent (int client_fd, int entity_id, int type) {
   writeByte(client_fd, 0);
   writeByte(client_fd, false);
 
+  packet_flush();
   return 0;
 }
 
 // S->C Set Health
 int sc_setHealth (int client_fd, uint8_t health, uint8_t food, uint16_t saturation) {
 
+  int batching = (packet_buffer_fd == client_fd);
+  if (!batching) packet_start(client_fd);
   writeVarInt(client_fd, 9 + sizeVarInt(food));
   writeByte(client_fd, 0x61);
 
@@ -1049,6 +1082,7 @@ int sc_setHealth (int client_fd, uint8_t health, uint8_t food, uint16_t saturati
   writeVarInt(client_fd, food);
   writeFloat(client_fd, (float)(saturation - 200) / 500.0f);
 
+  if (!batching) packet_flush();
   return 0;
 }
 
@@ -1106,17 +1140,19 @@ int cs_clientStatus (int client_fd) {
 // S->C System Chat
 int sc_systemChat (int client_fd, char* message, uint16_t len) {
 
+  packet_start(client_fd);
   writeVarInt(client_fd, 5 + len);
   writeByte(client_fd, 0x72);
 
   // String NBT tag
   writeByte(client_fd, 8);
   writeUint16(client_fd, len);
-  send_all(client_fd, message, len);
+  packet_write(message, len);
 
   // Is action bar message?
   writeByte(client_fd, false);
 
+  packet_flush();
   return 0;
 }
 

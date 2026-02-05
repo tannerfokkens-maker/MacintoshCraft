@@ -33,6 +33,7 @@
 #include "varnum.h"
 #include "procedures.h"
 #include "tools.h"
+#include "profiler.h"
 
 #ifndef htonll
   static uint64_t htonll (uint64_t value) {
@@ -48,6 +49,48 @@
 // Keep track of the total amount of bytes received with recv_all
 // Helps notice misread packets and clean up after errors
 uint64_t total_bytes_received = 0;
+
+// Packet buffering system - reduces network calls by batching writes
+uint8_t packet_buffer[PACKET_BUFFER_SIZE];
+int packet_buffer_len = 0;
+int packet_buffer_fd = -1;  // -1 means not buffering
+
+void packet_start (int client_fd) {
+  packet_buffer_fd = client_fd;
+  packet_buffer_len = 0;
+}
+
+void packet_write (const void *buf, size_t len) {
+  if (packet_buffer_len + len > PACKET_BUFFER_SIZE) {
+    // Buffer overflow - flush and continue
+    packet_flush_continue();
+  }
+  memcpy(packet_buffer + packet_buffer_len, buf, len);
+  packet_buffer_len += len;
+}
+
+ssize_t packet_flush_continue (void) {
+  if (packet_buffer_fd == -1 || packet_buffer_len == 0) {
+    return 0;
+  }
+  int fd = packet_buffer_fd;
+  ssize_t result = send_all(fd, packet_buffer, packet_buffer_len);
+  packet_buffer_len = 0;
+  // Keep fd set for more packets
+  packet_buffer_fd = fd;
+  return result;
+}
+
+ssize_t packet_flush (void) {
+  ssize_t result = packet_flush_continue();
+  packet_buffer_fd = -1;
+  return result;
+}
+
+void packet_end (void) {
+  packet_buffer_len = 0;
+  packet_buffer_fd = -1;
+}
 
 ssize_t recv_all (int client_fd, void *buf, size_t n, uint8_t require_first) {
   char *p = buf;
@@ -98,6 +141,7 @@ ssize_t recv_all (int client_fd, void *buf, size_t n, uint8_t require_first) {
 }
 
 ssize_t send_all (int client_fd, const void *buf, ssize_t len) {
+  PROF_START(NET_SEND);
   // Treat any input buffer as *uint8_t for simplicity
   const uint8_t *p = (const uint8_t *)buf;
   ssize_t sent = 0;
@@ -120,6 +164,7 @@ ssize_t send_all (int client_fd, const void *buf, ssize_t len) {
     }
     if (n == 0) { // connection was closed, treat this as an error
       errno = ECONNRESET;
+      PROF_END(NET_SEND);
       return -1;
     }
     // not yet ready to transmit, try again
@@ -129,17 +174,21 @@ ssize_t send_all (int client_fd, const void *buf, ssize_t len) {
     #else
     if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
     #endif
+      PROF_BLOCKED(NET_SEND);  // Track blocking waits
       // handle network timeout
       if (get_program_time() - last_update_time > NETWORK_TIMEOUT_TIME) {
         disconnectClient(&client_fd, -2);
+        PROF_END(NET_SEND);
         return -1;
       }
       task_yield();
       continue;
     }
+    PROF_END(NET_SEND);
     return -1; // real error
   }
 
+  PROF_END(NET_SEND);
   return sent;
 }
 
@@ -155,30 +204,54 @@ void discard_all (int client_fd, size_t remaining, uint8_t require_first) {
 }
 
 ssize_t writeByte (int client_fd, uint8_t byte) {
+  if (packet_buffer_fd == client_fd) {
+    packet_write(&byte, 1);
+    return 1;
+  }
   return send_all(client_fd, &byte, 1);
 }
 ssize_t writeUint16 (int client_fd, uint16_t num) {
   uint16_t be = htons(num);
+  if (packet_buffer_fd == client_fd) {
+    packet_write(&be, sizeof(be));
+    return sizeof(be);
+  }
   return send_all(client_fd, &be, sizeof(be));
 }
 ssize_t writeUint32 (int client_fd, uint32_t num) {
   uint32_t be = htonl(num);
+  if (packet_buffer_fd == client_fd) {
+    packet_write(&be, sizeof(be));
+    return sizeof(be);
+  }
   return send_all(client_fd, &be, sizeof(be));
 }
 ssize_t writeUint64 (int client_fd, uint64_t num) {
   uint64_t be = htonll(num);
+  if (packet_buffer_fd == client_fd) {
+    packet_write(&be, sizeof(be));
+    return sizeof(be);
+  }
   return send_all(client_fd, &be, sizeof(be));
 }
 ssize_t writeFloat (int client_fd, float num) {
   uint32_t bits;
   memcpy(&bits, &num, sizeof(bits));
   bits = htonl(bits);
+  if (packet_buffer_fd == client_fd) {
+    packet_write(&bits, sizeof(bits));
+    return sizeof(bits);
+  }
   return send_all(client_fd, &bits, sizeof(bits));
 }
 ssize_t writeDouble (int client_fd, double num) {
   uint64_t bits;
   memcpy(&bits, &num, sizeof(bits));
   bits = htonll(bits);
+  if (packet_buffer_fd == client_fd) {
+    packet_write(&bits, sizeof(bits));
+    return sizeof(bits);
+  }
   return send_all(client_fd, &bits, sizeof(bits));
 }
 
@@ -308,3 +381,63 @@ int64_t get_program_time () {
   #endif
 }
 #endif
+
+// Check if high-priority action packets are waiting in the socket buffer.
+// Peeks ahead in the receive buffer to find packet IDs for mining/placing.
+// Returns 1 if action packets found, 0 otherwise.
+int hasActionPacketWaiting (int client_fd) {
+  // Peek up to 64 bytes to scan for action packet IDs
+  // Format: [varint length][varint packet_id][data...]
+  uint8_t peek_buf[64];
+
+  #ifdef _WIN32
+    ssize_t peeked = recv(client_fd, (char *)peek_buf, sizeof(peek_buf), MSG_PEEK);
+  #else
+    ssize_t peeked = recv(client_fd, peek_buf, sizeof(peek_buf), MSG_PEEK);
+  #endif
+
+  if (peeked <= 0) return 0;
+
+  // Scan through peeked data looking for packet boundaries
+  int pos = 0;
+  while (pos < peeked - 1) {
+    // Try to read varint length
+    int length = 0;
+    int shift = 0;
+    int len_bytes = 0;
+
+    while (pos + len_bytes < peeked) {
+      uint8_t byte = peek_buf[pos + len_bytes];
+      length |= (byte & 0x7F) << shift;
+      len_bytes++;
+      if (!(byte & 0x80)) break;
+      shift += 7;
+      if (len_bytes > 3) break; // Invalid varint
+    }
+
+    if (len_bytes > 3 || pos + len_bytes >= peeked) break;
+
+    // Read packet ID (next varint after length)
+    int id_pos = pos + len_bytes;
+    int packet_id = 0;
+    shift = 0;
+
+    while (id_pos < peeked) {
+      uint8_t byte = peek_buf[id_pos];
+      packet_id |= (byte & 0x7F) << shift;
+      id_pos++;
+      if (!(byte & 0x80)) break;
+      shift += 7;
+    }
+
+    // Check for action packet IDs: 0x28 (mining), 0x3F (place), 0x40 (use item)
+    if (packet_id == 0x28 || packet_id == 0x3F || packet_id == 0x40) {
+      return 1;
+    }
+
+    // Move to next packet (skip length bytes + packet data)
+    pos += len_bytes + length;
+  }
+
+  return 0;
+}
