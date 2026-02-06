@@ -4,6 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef MAC68K_PLATFORM
+#include <Memory.h>
+#include "mac68k_console.h"
+#endif
+
 #include "globals.h"
 #include "tools.h"
 #include "registries.h"
@@ -399,15 +404,9 @@ uint8_t chunk_section_height[16][16];
 
 // ============================================================================
 // Chunk Section Cache
-// With 24MB RAM on 68k Mac, we can cache many generated chunks
-// Each cached chunk section is 4KB, so 4096 entries = 16MB cache (8x view)
+// Dynamically sized based on available RAM (configurable via Get Info on Mac)
+// Each cached chunk section is ~4KB, size calculated at runtime
 // ============================================================================
-
-#ifdef MAC68K_PLATFORM
-  #define CHUNK_CACHE_SIZE 4096  /* 16MB cache for 68k Mac (8x view) */
-#else
-  #define CHUNK_CACHE_SIZE 64    /* Smaller cache for other platforms */
-#endif
 
 typedef struct {
   int16_t cx, cy, cz;     /* Chunk coordinates (signed for negative coords) */
@@ -417,7 +416,8 @@ typedef struct {
   uint8_t data[4096];     /* Cached chunk section data */
 } CachedChunkSection;
 
-static CachedChunkSection chunk_cache[CHUNK_CACHE_SIZE];
+static CachedChunkSection *chunk_cache = NULL;
+static int chunk_cache_size = 0;
 static uint16_t cache_lru_clock = 0;
 static int cache_initialized = 0;
 
@@ -430,7 +430,35 @@ static int chunkCacheHash(int16_t cx, int16_t cy, int16_t cz);
 /* Initialize cache (call once at startup) */
 void initChunkCache(void) {
   if (cache_initialized) return;
-  for (int i = 0; i < CHUNK_CACHE_SIZE; i++) {
+
+#ifdef MAC68K_PLATFORM
+  /* Get cache size from preferences (in entries) */
+  chunk_cache_size = console_get_cache_size();
+
+  /* Clamp to reasonable bounds */
+  if (chunk_cache_size < 16) chunk_cache_size = 16;
+  if (chunk_cache_size > 8192) chunk_cache_size = 8192;
+
+  /* Allocate cache */
+  chunk_cache = (CachedChunkSection *)NewPtrClear(chunk_cache_size * sizeof(CachedChunkSection));
+  if (chunk_cache == NULL) {
+    /* Fallback to minimal cache if allocation fails */
+    console_printf("Cache alloc failed, trying smaller size\r");
+    chunk_cache_size = 16;
+    chunk_cache = (CachedChunkSection *)NewPtrClear(chunk_cache_size * sizeof(CachedChunkSection));
+  }
+
+  console_printf("Chunk cache: %d entries (%ldKB)\r",
+                 chunk_cache_size,
+                 (long)(chunk_cache_size * sizeof(CachedChunkSection) / 1024));
+#else
+  /* Non-Mac platforms: use fixed size */
+  chunk_cache_size = 64;
+  chunk_cache = (CachedChunkSection *)calloc(chunk_cache_size, sizeof(CachedChunkSection));
+#endif
+
+  /* Initialize all entries as invalid */
+  for (int i = 0; i < chunk_cache_size; i++) {
     chunk_cache[i].valid = 0;
     chunk_cache[i].lru_counter = 0;
   }
@@ -448,7 +476,7 @@ void invalidateChunkCache(int16_t x, uint8_t y, int16_t z) {
   /* Use hash to find entry quickly */
   int hash = chunkCacheHash(cx, cy, cz);
   for (int i = 0; i < MAX_PROBE_DISTANCE; i++) {
-    int idx = (hash + i) % CHUNK_CACHE_SIZE;
+    int idx = (hash + i) % chunk_cache_size;
     if (chunk_cache[idx].valid &&
         chunk_cache[idx].cx == cx &&
         chunk_cache[idx].cy == cy &&
@@ -461,7 +489,7 @@ void invalidateChunkCache(int16_t x, uint8_t y, int16_t z) {
 
 /* Clear entire cache (call when world seed changes) */
 void clearChunkCache(void) {
-  for (int i = 0; i < CHUNK_CACHE_SIZE; i++) {
+  for (int i = 0; i < chunk_cache_size; i++) {
     chunk_cache[i].valid = 0;
   }
 }
@@ -470,7 +498,7 @@ void clearChunkCache(void) {
 static int chunkCacheHash(int16_t cx, int16_t cy, int16_t cz) {
   /* Simple hash combining coordinates */
   uint32_t h = (uint32_t)(cx * 73856093) ^ (uint32_t)(cy * 19349663) ^ (uint32_t)(cz * 83492791);
-  return (int)(h % CHUNK_CACHE_SIZE);
+  return (int)(h % chunk_cache_size);
 }
 
 /* Find cache entry for coordinates, returns index or -1 if not found */
@@ -480,7 +508,7 @@ static int findCacheEntry(int16_t cx, int16_t cy, int16_t cz) {
 
   /* Limited linear probing from hash position */
   for (int i = 0; i < MAX_PROBE_DISTANCE; i++) {
-    int idx = (hash + i) % CHUNK_CACHE_SIZE;
+    int idx = (hash + i) % chunk_cache_size;
     if (!chunk_cache[idx].valid) continue;
     if (chunk_cache[idx].cx == cx &&
         chunk_cache[idx].cy == cy &&
@@ -497,7 +525,7 @@ static int findCacheSlot(int16_t cx, int16_t cy, int16_t cz) {
 
   /* First pass: look for empty slot near hash position (limited probe) */
   for (int i = 0; i < MAX_PROBE_DISTANCE; i++) {
-    int idx = (hash + i) % CHUNK_CACHE_SIZE;
+    int idx = (hash + i) % chunk_cache_size;
     if (!chunk_cache[idx].valid) {
       return idx;
     }
@@ -505,10 +533,10 @@ static int findCacheSlot(int16_t cx, int16_t cy, int16_t cz) {
 
   /* No empty slots nearby - evict oldest entry within probe distance */
   /* This ensures entries are always findable by findCacheEntry */
-  int oldest_idx = hash % CHUNK_CACHE_SIZE;
+  int oldest_idx = hash % chunk_cache_size;
   uint16_t oldest_age = 0;
   for (int i = 0; i < MAX_PROBE_DISTANCE; i++) {
-    int idx = (hash + i) % CHUNK_CACHE_SIZE;
+    int idx = (hash + i) % chunk_cache_size;
     uint16_t age = (uint16_t)(cache_lru_clock - chunk_cache[idx].lru_counter);
     if (age > oldest_age) {
       oldest_age = age;

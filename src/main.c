@@ -311,11 +311,19 @@ void handlePacket (int client_fd, int length, int packet_id, int state) {
           if (mob_data[i].type == 0) continue;
           if ((mob_data[i].data & 31) == 0) continue;
           memcpy(uuid + 4, &i, 4);
+          short block_x = mobBlockX(&mob_data[i]);
+          short block_z = mobBlockZ(&mob_data[i]);
+          double spawn_x = (double)block_x + 0.5;
+          double spawn_z = (double)block_z + 0.5;
           // For more info on the arguments here, see the spawnMob function
           sc_spawnEntity(
             client_fd, -2 - i, uuid,
-            mob_data[i].type, mob_data[i].x, mob_data[i].y, mob_data[i].z,
-            0, 0
+            mob_data[i].type,
+            spawn_x,
+            mob_data[i].y,
+            spawn_z,
+            0,
+            0
           );
           broadcastMobMetadata(client_fd, -2 - i);
         }
@@ -712,7 +720,11 @@ int main () {
   #ifdef MAC68K_PLATFORM
     // Initialize Mac Toolbox and console window
     console_init();
+    // Load saved preferences (view distance, cache size)
+    console_load_prefs();
     console_printf("Starting Bareiron server...\r\r");
+    // Initialize chunk cache early, before other allocations consume heap
+    initChunkCache();
   #endif
 
   #ifdef _WIN32 //initialize windows socket
@@ -918,6 +930,8 @@ int main () {
       last_tick_time = get_program_time();
     }
 
+    processMobInterpolation(get_program_time());
+
     // Handle this individual client
     int client_fd = interleave_clients[interleave_client_index];
 
@@ -1057,6 +1071,8 @@ int main () {
   close(server_fd);
 
   #ifdef MAC68K_PLATFORM
+    // Save preferences before closing
+    console_save_prefs();
     cleanup_open_transport();
     console_print("Server closed.\r");
   #elif defined(_WIN32)

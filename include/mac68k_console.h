@@ -22,6 +22,18 @@ void console_printf(const char *fmt, ...);
 /* Check if the application should quit */
 int console_should_quit(void);
 
+/* Get the configured chunk cache size (in entries) */
+int console_get_cache_size(void);
+
+/* Get the mob interpolation setting (0=disabled, 1=enabled) */
+int console_get_mob_interpolation(void);
+
+/* Save preferences to disk */
+void console_save_prefs(void);
+
+/* Load preferences from disk */
+void console_load_prefs(void);
+
 #endif /* MAC68K_PLATFORM */
 
 #endif /* MAC68K_CONSOLE_H */

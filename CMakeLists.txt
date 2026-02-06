@@ -5,8 +5,8 @@ project(bareiron C)
 file(GLOB SOURCES "src/*.c")
 list(FILTER SOURCES EXCLUDE REGEX ".*ot_glue\\.c$")
 
-# Add the executable
-add_application(bareiron ${SOURCES})
+# Add the executable with resource file
+add_application(bareiron ${SOURCES} bareiron.r)
 
 # Include directories
 target_include_directories(bareiron PRIVATE

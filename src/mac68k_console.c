@@ -16,8 +16,11 @@
 #include <Memory.h>
 #include <SegLoad.h>
 #include <Devices.h>
+#include <Folders.h>
+#include <Files.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "mac68k_console.h"
@@ -43,6 +46,10 @@
 #define ITEM_SERVER_VD2     2
 #define ITEM_SERVER_VD3     3
 #define ITEM_SERVER_VD4     4
+#define ITEM_SERVER_SEP1    5  /* Separator */
+#define ITEM_SERVER_CACHE   6  /* Set Cache Size... */
+#define ITEM_SERVER_SEP2    7  /* Separator */
+#define ITEM_SERVER_INTERP  8  /* Smooth Mob Movement */
 
 #define ITEM_DEBUG_PROFILE  1
 #define ITEM_DEBUG_SAVE     2
@@ -58,6 +65,10 @@ static WindowPtr g_console_window = NULL;
 static TEHandle g_te_handle = NULL;
 static int g_should_quit = 0;
 static int g_line_count = 0;
+
+/* Configuration (saved to preferences) */
+static long g_cache_size_kb = 1024;  /* Default: 1024 KB (1MB) */
+static int g_mob_interpolation = 1;  /* Default: enabled */
 
 /* Menu handles */
 static MenuHandle g_apple_menu = NULL;
@@ -77,6 +88,7 @@ static void setup_menus(void);
 static void handle_menu_choice(long menu_choice);
 static void update_view_distance_checkmarks(void);
 static void update_net_stack_checkmarks(void);
+static void show_cache_size_dialog(void);
 
 /* Update checkmarks on view distance menu items */
 static void update_view_distance_checkmarks(void) {
@@ -91,6 +103,184 @@ static void update_net_stack_checkmarks(void) {
     int selected_ot = net_get_selected_stack();
     CheckItem(g_debug_menu, ITEM_DEBUG_USE_OT, selected_ot);
     CheckItem(g_debug_menu, ITEM_DEBUG_USE_TCP, !selected_ot);
+}
+
+/* Show dialog for setting cache size in KB */
+static void show_cache_size_dialog(void) {
+    WindowPtr dialog;
+    Rect dialog_rect, input_rect, ok_rect, cancel_rect;
+    TEHandle te;
+    char buffer[32];
+    EventRecord event;
+    int done = 0;
+    int accepted = 0;
+    Point mouse;
+
+    /* Calculate dialog position (centered) */
+    Rect screen = qd.screenBits.bounds;
+    SetRect(&dialog_rect,
+            (screen.right - 300) / 2,
+            (screen.bottom - 120) / 2,
+            (screen.right + 300) / 2,
+            (screen.bottom + 120) / 2);
+
+    /* Create a simple window as dialog */
+    dialog = NewWindow(NULL, &dialog_rect, "\pSet Cache Size",
+                       true, dBoxProc, (WindowPtr)-1L, false, 0L);
+
+    if (dialog == NULL) {
+        console_print("Could not create dialog\r");
+        return;
+    }
+
+    SetPort(dialog);
+    TextFont(0);
+    TextSize(12);
+
+    /* Draw prompt */
+    MoveTo(20, 25);
+    DrawString("\pEnter cache size in KB:");
+
+    /* Input field area */
+    SetRect(&input_rect, 20, 35, 200, 55);
+    FrameRect(&input_rect);
+    InsetRect(&input_rect, 3, 3);
+
+    /* Create TextEdit for input */
+    te = TENew(&input_rect, &input_rect);
+    if (te == NULL) {
+        DisposeWindow(dialog);
+        console_print("Could not create text field\r");
+        return;
+    }
+
+    /* Set initial value */
+    snprintf(buffer, sizeof(buffer), "%ld", g_cache_size_kb);
+    TESetText(buffer, strlen(buffer), te);
+    TESetSelect(0, 32767, te);  /* Select all */
+    TEActivate(te);
+
+    /* Button areas */
+    SetRect(&ok_rect, 210, 35, 280, 55);
+    SetRect(&cancel_rect, 210, 65, 280, 85);
+
+    /* Draw buttons */
+    PenSize(2, 2);
+    FrameRect(&ok_rect);
+    PenSize(1, 1);
+    MoveTo(233, 50);
+    DrawString("\pOK");
+
+    FrameRect(&cancel_rect);
+    MoveTo(220, 80);
+    DrawString("\pCancel");
+
+    /* Draw hint text */
+    TextSize(9);
+    MoveTo(20, 75);
+    DrawString("\p(e.g., 1024 for 1MB, 4096 for 4MB)");
+    MoveTo(20, 90);
+    DrawString("\pChanges take effect after restart.");
+    TextSize(12);
+
+    /* Event loop */
+    while (!done) {
+        TEIdle(te);
+
+        if (WaitNextEvent(everyEvent, &event, 10, NULL)) {
+            switch (event.what) {
+                case mouseDown:
+                    mouse = event.where;
+                    GlobalToLocal(&mouse);
+
+                    if (PtInRect(mouse, &ok_rect)) {
+                        /* OK clicked - get value */
+                        int len = (*te)->teLength;
+                        if (len > 0 && len < 30) {
+                            char val_str[32];
+                            BlockMove(*((*te)->hText), val_str, len);
+                            val_str[len] = '\0';
+                            long new_val = atol(val_str);
+                            if (new_val >= 64 && new_val <= 65536) {
+                                g_cache_size_kb = new_val;
+                                accepted = 1;
+                            }
+                        }
+                        done = 1;
+                    } else if (PtInRect(mouse, &cancel_rect)) {
+                        done = 1;
+                    } else if (PtInRect(mouse, &input_rect)) {
+                        TEClick(mouse, (event.modifiers & shiftKey) != 0, te);
+                    }
+                    break;
+
+                case keyDown:
+                case autoKey: {
+                    char key = event.message & charCodeMask;
+                    if (key == 0x0D || key == 0x03) {  /* Return or Enter */
+                        int len = (*te)->teLength;
+                        if (len > 0 && len < 30) {
+                            char val_str[32];
+                            BlockMove(*((*te)->hText), val_str, len);
+                            val_str[len] = '\0';
+                            long new_val = atol(val_str);
+                            if (new_val >= 64 && new_val <= 65536) {
+                                g_cache_size_kb = new_val;
+                                accepted = 1;
+                            }
+                        }
+                        done = 1;
+                    } else if (key == 0x1B) {  /* Escape */
+                        done = 1;
+                    } else {
+                        TEKey(key, te);
+                    }
+                    break;
+                }
+
+                case updateEvt:
+                    BeginUpdate(dialog);
+                    /* Redraw */
+                    MoveTo(20, 25);
+                    DrawString("\pEnter cache size in KB:");
+                    SetRect(&input_rect, 20, 35, 200, 55);
+                    FrameRect(&input_rect);
+                    PenSize(2, 2);
+                    SetRect(&ok_rect, 210, 35, 280, 55);
+                    FrameRect(&ok_rect);
+                    PenSize(1, 1);
+                    MoveTo(233, 50);
+                    DrawString("\pOK");
+                    SetRect(&cancel_rect, 210, 65, 280, 85);
+                    FrameRect(&cancel_rect);
+                    MoveTo(220, 80);
+                    DrawString("\pCancel");
+                    TextSize(9);
+                    MoveTo(20, 75);
+                    DrawString("\p(e.g., 1024 for 1MB, 4096 for 4MB)");
+                    MoveTo(20, 90);
+                    DrawString("\pChanges take effect after restart.");
+                    TextSize(12);
+                    InsetRect(&input_rect, 3, 3);
+                    TEUpdate(&input_rect, te);
+                    EndUpdate(dialog);
+                    break;
+            }
+        }
+    }
+
+    TEDispose(te);
+    DisposeWindow(dialog);
+
+    /* Restore port to console window */
+    if (g_console_window != NULL) {
+        SetPort(g_console_window);
+    }
+
+    if (accepted) {
+        console_printf("Cache size set to %ld KB\r", g_cache_size_kb);
+        console_print("(Will take effect after restart)\r");
+    }
 }
 
 /* Set up the menu bar */
@@ -113,8 +303,13 @@ static void setup_menus(void) {
     AppendMenu(g_server_menu, "\pView Distance: 2/2");
     AppendMenu(g_server_menu, "\pView Distance: 3/3");
     AppendMenu(g_server_menu, "\pView Distance: 4/4");
+    AppendMenu(g_server_menu, "\p(-");  /* Separator */
+    AppendMenu(g_server_menu, "\pSet Cache Size...");
+    AppendMenu(g_server_menu, "\p(-");  /* Separator */
+    AppendMenu(g_server_menu, "\pSmooth Mob Movement");
     InsertMenu(g_server_menu, 0);
     update_view_distance_checkmarks();
+    CheckItem(g_server_menu, ITEM_SERVER_INTERP, g_mob_interpolation);
 
     /* Create Debug menu */
     g_debug_menu = NewMenu(MENU_DEBUG, "\pDebug");
@@ -167,6 +362,12 @@ static void handle_menu_choice(long menu_choice) {
                 view_distance = item_id;  /* VD1=1, VD2=2, etc. */
                 update_view_distance_checkmarks();
                 console_printf("View distance set to %d\r", view_distance);
+            } else if (item_id == ITEM_SERVER_CACHE) {
+                show_cache_size_dialog();
+            } else if (item_id == ITEM_SERVER_INTERP) {
+                g_mob_interpolation = !g_mob_interpolation;
+                CheckItem(g_server_menu, ITEM_SERVER_INTERP, g_mob_interpolation);
+                console_printf("Mob interpolation %s\r", g_mob_interpolation ? "enabled" : "disabled");
             }
             break;
 
@@ -380,6 +581,148 @@ void console_printf(const char *fmt, ...) {
 
 int console_should_quit(void) {
     return g_should_quit;
+}
+
+int console_get_cache_size(void) {
+    /* Convert KB to number of entries */
+    /* Each CachedChunkSection is approximately 4KB */
+    return (int)(g_cache_size_kb / 4);
+}
+
+int console_get_mob_interpolation(void) {
+    return g_mob_interpolation;
+}
+
+/* Preferences file handling */
+#define PREFS_FILE_NAME "\pBareiron Prefs"
+#define PREFS_CREATOR 'BARI'
+#define PREFS_TYPE 'pref'
+
+/* Preferences structure */
+typedef struct {
+    long magic;           /* 'BARI' to identify valid prefs */
+    short version;        /* Prefs format version */
+    short view_dist;      /* View distance setting */
+    long cache_size_kb;   /* Cache size in KB */
+    short mob_interp;     /* Mob interpolation enabled */
+} BareironPrefs;
+
+#define PREFS_MAGIC 'BARI'
+#define PREFS_VERSION 2
+
+void console_save_prefs(void) {
+    OSErr err;
+    short vRefNum;
+    long dirID;
+    FSSpec spec;
+    short refNum;
+    long count;
+    BareironPrefs prefs;
+
+    /* Find the Preferences folder */
+    err = FindFolder(kOnSystemDisk, kPreferencesFolderType, kCreateFolder, &vRefNum, &dirID);
+    if (err != noErr) {
+        console_print("Could not find Preferences folder\r");
+        return;
+    }
+
+    /* Create FSSpec for our prefs file */
+    err = FSMakeFSSpec(vRefNum, dirID, PREFS_FILE_NAME, &spec);
+
+    /* Create the file if it doesn't exist */
+    if (err == fnfErr) {
+        err = FSpCreate(&spec, PREFS_CREATOR, PREFS_TYPE, smSystemScript);
+        if (err != noErr) {
+            console_print("Could not create prefs file\r");
+            return;
+        }
+    } else if (err != noErr) {
+        console_print("Error accessing prefs file\r");
+        return;
+    }
+
+    /* Open the file for writing */
+    err = FSpOpenDF(&spec, fsWrPerm, &refNum);
+    if (err != noErr) {
+        console_print("Could not open prefs file for writing\r");
+        return;
+    }
+
+    /* Fill in prefs structure */
+    prefs.magic = PREFS_MAGIC;
+    prefs.version = PREFS_VERSION;
+    prefs.view_dist = view_distance;
+    prefs.cache_size_kb = g_cache_size_kb;
+    prefs.mob_interp = g_mob_interpolation;
+
+    /* Write prefs */
+    count = sizeof(BareironPrefs);
+    err = FSWrite(refNum, &count, &prefs);
+    if (err != noErr) {
+        console_print("Error writing prefs\r");
+    } else {
+        console_printf("Saved prefs: view_dist=%d, cache=%ldKB, interp=%d\r",
+                       view_distance, g_cache_size_kb, g_mob_interpolation);
+    }
+
+    FSClose(refNum);
+}
+
+void console_load_prefs(void) {
+    OSErr err;
+    short vRefNum;
+    long dirID;
+    FSSpec spec;
+    short refNum;
+    long count;
+    BareironPrefs prefs;
+
+    /* Find the Preferences folder */
+    err = FindFolder(kOnSystemDisk, kPreferencesFolderType, kDontCreateFolder, &vRefNum, &dirID);
+    if (err != noErr) {
+        return;  /* No prefs folder, use defaults */
+    }
+
+    /* Create FSSpec for our prefs file */
+    err = FSMakeFSSpec(vRefNum, dirID, PREFS_FILE_NAME, &spec);
+    if (err != noErr) {
+        return;  /* No prefs file, use defaults */
+    }
+
+    /* Open the file for reading */
+    err = FSpOpenDF(&spec, fsRdPerm, &refNum);
+    if (err != noErr) {
+        return;  /* Can't open, use defaults */
+    }
+
+    /* Read prefs */
+    count = sizeof(BareironPrefs);
+    err = FSRead(refNum, &count, &prefs);
+    FSClose(refNum);
+
+    if (err != noErr) {
+        return;  /* Read failed, use defaults */
+    }
+
+    /* Validate magic number */
+    if (prefs.magic != PREFS_MAGIC) {
+        return;  /* Invalid prefs file */
+    }
+
+    /* Apply settings */
+    if (prefs.view_dist >= 1 && prefs.view_dist <= 4) {
+        view_distance = prefs.view_dist;
+    }
+    if (prefs.cache_size_kb >= 64 && prefs.cache_size_kb <= 65536) {
+        g_cache_size_kb = prefs.cache_size_kb;
+    }
+    /* Only load mob_interp if version >= 2 */
+    if (prefs.version >= 2) {
+        g_mob_interpolation = prefs.mob_interp ? 1 : 0;
+    }
+
+    console_printf("Loaded prefs: view_dist=%d, cache=%ldKB, interp=%d\r",
+                   view_distance, g_cache_size_kb, g_mob_interpolation);
 }
 
 #endif /* MAC68K_PLATFORM */
