@@ -42,6 +42,9 @@ uint32_t server_ticks = 0;
 
 int view_distance = 1;
 
+/* Chunk interleave callback - set by main.c, called by packets.c */
+chunk_interleave_fn chunk_interleave_callback = NULL;
+
 char motd[] = { "A bareiron server" };
 uint8_t motd_len = sizeof(motd) - 1;
 

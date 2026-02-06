@@ -5,6 +5,34 @@
 
 #include "globals.h"
 
+/*
+ * ============================================================================
+ * GLOBAL STATE WARNING
+ * ============================================================================
+ * The following globals are shared across all network operations:
+ *
+ *   - recv_buffer[MAX_RECV_BUF_LEN] (defined in globals.h/c)
+ *     Temporary buffer for incoming data. Overwritten by ANY read operation.
+ *
+ *   - recv_count (defined in globals.h/c)
+ *     Result of last recv_all() call. Overwritten by ANY read operation.
+ *
+ *   - total_bytes_received (defined below)
+ *     Cumulative byte counter for packet length validation.
+ *
+ *   - packet_buffer, packet_buffer_len, packet_buffer_fd (defined below)
+ *     Write buffering state. Only one client can be buffered at a time.
+ *
+ * IMPORTANT: During chunk interleaving (see main.c), packet handlers for
+ * OTHER clients may run, which will overwrite these globals. Code that
+ * calls the interleave callback must not rely on these values afterward.
+ *
+ * The read functions (readByte, readUint16, etc.) all use recv_buffer
+ * internally and set recv_count. Callers must consume returned values
+ * immediately before any other network operation.
+ * ============================================================================
+ */
+
 static inline int mod_abs (int a, int b) {
   return ((a % b) + b) % b;
 }

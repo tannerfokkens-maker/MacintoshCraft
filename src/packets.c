@@ -382,8 +382,42 @@ int sc_chunkDataAndUpdateLight (int client_fd, int _x, int _z) {
     // biome data
     writeByte(client_fd, 0); // bits per entry
     writeByte(client_fd, biome); // biome palette
-    // yield to idle task
-    task_yield();
+
+    /*
+     * Smart interleaving: Every 4 chunk sections, check if other clients
+     * have pending packets and process them. This keeps multiplayer
+     * responsive during long chunk sends.
+     *
+     * IMPORTANT: We save/restore the packet buffer state, but we FORCE
+     * packet_buffer_len = 0 after the callback. This is critical because:
+     *   1. The callback may process packets that use packet_start/flush
+     *   2. If a handler returns early or broadcasts to multiple clients,
+     *      packet_buffer_len could be nonzero when we return
+     *   3. Without forcing it to 0, stale bytes get prepended to chunk data
+     *
+     * The callback itself skips packets that could trigger chunk sends
+     * (movement, config ack) to prevent worldgen global corruption.
+     */
+    if ((i & 3) == 3 && chunk_interleave_callback != NULL) {
+      /* Flush any buffered data before interleave */
+      packet_flush_continue();
+
+      /* Save packet buffer fd (len should be 0 after flush) */
+      int saved_fd = packet_buffer_fd;
+
+      /* Clear buffer state for callback */
+      packet_buffer_fd = -1;
+      packet_buffer_len = 0;
+
+      /* Process other clients */
+      chunk_interleave_callback(client_fd);
+
+      /* Restore fd but FORCE len to 0 - don't trust callback's state */
+      packet_buffer_fd = saved_fd;
+      packet_buffer_len = 0;
+    } else {
+      task_yield();
+    }
   }
 
   // send 8 chunk sections (up to Y=192) with no blocks

@@ -50,6 +50,157 @@
 #include "serialize.h"
 #include "profiler.h"
 
+/*
+ * ============================================================================
+ * Chunk Send Interleaving Support
+ * ============================================================================
+ * These static variables and functions allow chunk sending to be interleaved
+ * with processing other clients. When sending chunks to Player A, we
+ * periodically check if Players B, C, D have pending packets and process
+ * them. This prevents one player's chunk load from freezing everyone else.
+ *
+ * The interleave_process_other_clients() function is called via the
+ * chunk_interleave_callback function pointer from packets.c.
+ */
+
+/* Client file descriptors - moved to file scope for interleave access */
+static int interleave_clients[MAX_PLAYERS];
+static int interleave_client_index = 0;
+
+/* Forward declaration of handlePacket (defined below) */
+void handlePacket(int client_fd, int length, int packet_id, int state);
+
+/*
+ * Process other clients during chunk sends.
+ *
+ * Called between chunk sections to keep other players responsive.
+ * Processes at most one packet from each other client to avoid
+ * spending too much time away from the chunk send.
+ *
+ * REENTRANCY NOTE:
+ * This function calls handlePacket(), which can trigger chunk sends for
+ * other players, which would call this function again. We use a static
+ * guard to prevent recursive interleaving. This is safe because:
+ *   1. We skip the current_client_fd, so we won't re-enter for the same client
+ *   2. The guard prevents processing other clients' packets recursively
+ *   3. Recursive calls still yield to the system via task_yield()
+ *
+ * GLOBAL STATE WARNING:
+ * This function uses global state (recv_buffer, recv_count, etc.) that is
+ * shared with the main packet processing loop. The chunk send code in
+ * packets.c must not rely on these globals after calling the interleave
+ * callback, as they may have been modified by processing other clients.
+ *
+ * @param current_client_fd  The client currently receiving chunks (skip this one)
+ */
+static void interleave_process_other_clients(int current_client_fd) {
+    /* Recursion guard - prevent nested interleaving */
+    static int interleave_active = 0;
+
+    /* Always yield to system (Mac events, ESP watchdog, etc.) */
+    task_yield();
+
+    /* If already processing an interleave, don't recurse */
+    if (interleave_active) return;
+    interleave_active = 1;
+
+    /* Check each client slot for pending data */
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        int client_fd = interleave_clients[i];
+
+        /* Skip empty slots and the client we're sending chunks to */
+        if (client_fd == -1) continue;
+        if (client_fd == current_client_fd) continue;
+
+        /*
+         * Peek packet header to check if it's safe to process.
+         * We need to decode the packet ID WITHOUT consuming bytes,
+         * so we can skip packets that could trigger chunk sends
+         * (which would corrupt worldgen globals).
+         */
+        uint8_t peek_buf[6];  /* Enough for 2 small varints */
+        #ifdef _WIN32
+        int peek_result = recv(client_fd, (char *)peek_buf, 6, MSG_PEEK);
+        #else
+        ssize_t peek_result = recv(client_fd, peek_buf, 6, MSG_PEEK);
+        #endif
+        if (peek_result < 2) continue;  /* Need at least 2 bytes for header */
+
+        /* Decode packet length varint from peeked buffer */
+        int offset = 0;
+        int length = 0;
+        int shift = 0;
+        while (offset < peek_result && offset < 5) {
+            uint8_t b = peek_buf[offset++];
+            length |= (b & 0x7F) << shift;
+            if ((b & 0x80) == 0) break;
+            shift += 7;
+        }
+        if (offset >= peek_result) continue;  /* Incomplete length */
+
+        /* Decode packet ID varint from peeked buffer */
+        int packet_id = 0;
+        shift = 0;
+        while (offset < peek_result && offset < 10) {
+            uint8_t b = peek_buf[offset++];
+            packet_id |= (b & 0x7F) << shift;
+            if ((b & 0x80) == 0) break;
+            shift += 7;
+        }
+
+        /*
+         * CRITICAL: Skip packets that could trigger chunk sends.
+         * These packets would call sc_chunkDataAndUpdateLight(), which
+         * uses the same worldgen globals (chunk_section, etc.) as the
+         * chunk send we're currently in the middle of. Processing them
+         * would silently corrupt both players' chunk data.
+         *
+         * Skip these packet types - they'll be processed by the main loop:
+         *   0x03 (config ack) - triggers initial spawn + chunk send
+         *   0x1D-0x20 (movement) - triggers chunk send on boundary crossing
+         *
+         * Safe to process during interleave:
+         *   0x08 (chat), 0x0B (client status), 0x11 (click container),
+         *   0x12 (close container), 0x19 (interact/attack entity),
+         *   0x1B (keep-alive), 0x28 (player action), 0x29 (player command),
+         *   0x34 (held item), 0x3C (swing arm), 0x3F/0x40 (use item)
+         */
+        if (packet_id == 0x03 || (packet_id >= 0x1D && packet_id <= 0x20)) {
+            continue;  /* Leave packet in buffer for main loop */
+        }
+
+        /* Safe to process - now actually consume the bytes */
+        int state = client_states[i * 2];
+        if (state < 0) continue;
+
+        /* Read packet length (consuming bytes this time) */
+        length = readVarInt(client_fd);
+        if (recv_count <= 0) continue;
+
+        /* Read packet ID */
+        packet_id = readVarInt(client_fd);
+        if (recv_count <= 0) continue;
+
+        /* Handle the packet */
+        handlePacket(client_fd, length - sizeVarInt(packet_id), packet_id, state);
+    }
+
+    /*
+     * NOTE: We intentionally do NOT run server ticks during interleave.
+     *
+     * handleServerTick() sends keep-alive, time updates, and mob packets
+     * to multiple clients. Running it mid-chunk-send adds complexity and
+     * risk of packet interleaving issues. A 1-second tick delay during
+     * chunk loads is acceptable - the main loop handles ticks between
+     * clients normally.
+     *
+     * This also keeps behavior consistent with TIME_BETWEEN_TICKS tuning
+     * documented in the project options.
+     */
+
+    interleave_active = 0;
+}
+
 /**
  * Routes an incoming packet to its packet handler or procedure.
  *
@@ -562,9 +713,10 @@ int main () {
   if (initSerializer()) exit(EXIT_FAILURE);
 
   // Initialize all file descriptor references to -1 (unallocated)
-  int clients[MAX_PLAYERS], client_index = 0;
+  // Note: We use the static interleave_clients[] array instead of a local array
+  // so that the interleave callback can access connected client file descriptors
   for (int i = 0; i < MAX_PLAYERS; i ++) {
-    clients[i] = -1;
+    interleave_clients[i] = -1;
     client_states[i * 2] = -1;
     player_data[i].client_fd = -1;
   }
@@ -650,6 +802,13 @@ int main () {
   // Track time of last server tick (in microseconds)
   int64_t last_tick_time = get_program_time();
 
+  /*
+   * Set up chunk interleaving callback.
+   * This allows packets.c to call back into main.c during long chunk sends,
+   * keeping other connected players responsive.
+   */
+  chunk_interleave_callback = interleave_process_other_clients;
+
   /**
    * Cycles through all connected clients, handling one packet at a time
    * from each player. With every iteration, attempts to accept a new
@@ -690,17 +849,17 @@ int main () {
 
     // Attempt to accept a new connection
     for (int i = 0; i < MAX_PLAYERS; i ++) {
-      if (clients[i] != -1) continue;
-      clients[i] = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
+      if (interleave_clients[i] != -1) continue;
+      interleave_clients[i] = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
       // If the accept was successful, make the client non-blocking too
-      if (clients[i] != -1) {
-        printf("New client, fd: %d\n", clients[i]);
+      if (interleave_clients[i] != -1) {
+        printf("New client, fd: %d\n", interleave_clients[i]);
       #ifdef _WIN32
         u_long mode = 1;
-        ioctlsocket(clients[i], FIONBIO, &mode);
+        ioctlsocket(interleave_clients[i], FIONBIO, &mode);
       #else
-        int flags = fcntl(clients[i], F_GETFL, 0);
-        fcntl(clients[i], F_SETFL, flags | O_NONBLOCK);
+        int flags = fcntl(interleave_clients[i], F_GETFL, 0);
+        fcntl(interleave_clients[i], F_SETFL, flags | O_NONBLOCK);
       #endif
         client_count ++;
       }
@@ -708,9 +867,9 @@ int main () {
     }
 
     // Look for valid connected clients
-    client_index ++;
-    if (client_index == MAX_PLAYERS) client_index = 0;
-    if (clients[client_index] == -1) continue;
+    interleave_client_index ++;
+    if (interleave_client_index == MAX_PLAYERS) interleave_client_index = 0;
+    if (interleave_clients[interleave_client_index] == -1) continue;
 
     // Handle periodic events (server ticks)
     int64_t time_since_last_tick = get_program_time() - last_tick_time;
@@ -723,13 +882,13 @@ int main () {
     }
 
     // Handle this individual client
-    int client_fd = clients[client_index];
+    int client_fd = interleave_clients[interleave_client_index];
 
     // Check if at least 2 bytes are available for reading
     #ifdef _WIN32
     recv_count = recv(client_fd, recv_buffer, 2, MSG_PEEK);
     if (recv_count == 0) {
-      disconnectClient(&clients[client_index], 1);
+      disconnectClient(&interleave_clients[interleave_client_index], 1);
       continue;
     }
     if (recv_count == SOCKET_ERROR) {
@@ -737,7 +896,7 @@ int main () {
       if (err == WSAEWOULDBLOCK) {
         continue; // no data yet, keep client alive
       } else {
-        disconnectClient(&clients[client_index], 1);
+        disconnectClient(&interleave_clients[interleave_client_index], 1);
         continue;
       }
     }
@@ -745,7 +904,7 @@ int main () {
     recv_count = recv(client_fd, &recv_buffer, 2, MSG_PEEK);
     if (recv_count < 2) {
       if (recv_count == 0 || (recv_count < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-        disconnectClient(&clients[client_index], 1);
+        disconnectClient(&interleave_clients[interleave_client_index], 1);
       }
       continue;
     }
@@ -762,7 +921,7 @@ int main () {
       shutdown(client_fd, SHUT_WR);
       recv_all(client_fd, recv_buffer, sizeof(recv_buffer), false);
       // Kick the client
-      disconnectClient(&clients[client_index], 6);
+      disconnectClient(&interleave_clients[interleave_client_index], 6);
       continue;
     }
     // Received FEED packet, load world data from socket and disconnect
@@ -782,7 +941,7 @@ int main () {
       writeBlockChangesToDisk(0, block_changes_count);
       writePlayerDataToDisk();
       // Kick the client
-      disconnectClient(&clients[client_index], 7);
+      disconnectClient(&interleave_clients[interleave_client_index], 7);
       continue;
     }
     #endif
@@ -790,26 +949,26 @@ int main () {
     // Read packet length
     int length = readVarInt(client_fd);
     if (length == VARNUM_ERROR) {
-      disconnectClient(&clients[client_index], 2);
+      disconnectClient(&interleave_clients[interleave_client_index], 2);
       continue;
     }
     // Read packet ID
     int packet_id = readVarInt(client_fd);
     if (packet_id == VARNUM_ERROR) {
-      disconnectClient(&clients[client_index], 3);
+      disconnectClient(&interleave_clients[interleave_client_index], 3);
       continue;
     }
     // Get client connection state
     int state = getClientState(client_fd);
     // Disconnect on legacy server list ping
     if (state == STATE_NONE && length == 254 && packet_id == 122) {
-      disconnectClient(&clients[client_index], 5);
+      disconnectClient(&interleave_clients[interleave_client_index], 5);
       continue;
     }
     // Handle packet data
     handlePacket(client_fd, length - sizeVarInt(packet_id), packet_id, state);
     if (recv_count == 0 || (recv_count == -1 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-      disconnectClient(&clients[client_index], 4);
+      disconnectClient(&interleave_clients[interleave_client_index], 4);
       continue;
     }
 
@@ -832,12 +991,12 @@ int main () {
         // Read next packet
         length = readVarInt(client_fd);
         if (length == VARNUM_ERROR) {
-          disconnectClient(&clients[client_index], 2);
+          disconnectClient(&interleave_clients[interleave_client_index], 2);
           break;
         }
         packet_id = readVarInt(client_fd);
         if (packet_id == VARNUM_ERROR) {
-          disconnectClient(&clients[client_index], 3);
+          disconnectClient(&interleave_clients[interleave_client_index], 3);
           break;
         }
 
@@ -845,7 +1004,7 @@ int main () {
         handlePacket(client_fd, length - sizeVarInt(packet_id), packet_id, state);
 
         if (recv_count == 0 || (recv_count == -1 && errno != EAGAIN && errno != EWOULDBLOCK)) {
-          disconnectClient(&clients[client_index], 4);
+          disconnectClient(&interleave_clients[interleave_client_index], 4);
           break;
         }
 

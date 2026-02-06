@@ -46,6 +46,24 @@
 // Runtime configurable via menu on Mac
 extern int view_distance;
 
+/*
+ * Chunk Send Interleaving
+ * -----------------------
+ * When sending chunks to one player, we want to remain responsive to other
+ * players. The interleave callback is called between chunk sections during
+ * sc_chunkDataAndUpdateLight(). It allows the main loop to:
+ *   1. Process pending packets from other connected clients
+ *   2. Run server ticks if they're due
+ *   3. Handle Mac events (via task_yield)
+ *
+ * The callback receives the file descriptor of the client currently being
+ * served (so we don't process their packets mid-chunk-send).
+ *
+ * Set this to NULL to disable interleaving (not recommended for multiplayer).
+ */
+typedef void (*chunk_interleave_fn)(int current_client_fd);
+extern chunk_interleave_fn chunk_interleave_callback;
+
 // Time between server ticks in microseconds (default = 1s)
 #define TIME_BETWEEN_TICKS 1000000
 
