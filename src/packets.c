@@ -1078,7 +1078,7 @@ int sc_setHeadRotation (int client_fd, int id, uint8_t yaw) {
   return 0;
 }
 
-// S->C Set Head Rotation
+// S->C Update Entity Rotation (0x31)
 int sc_updateEntityRotation (int client_fd, int id, uint8_t yaw, uint8_t pitch) {
 
   // Packet length and ID
@@ -1092,6 +1092,67 @@ int sc_updateEntityRotation (int client_fd, int id, uint8_t yaw, uint8_t pitch) 
   // "On ground" flag
   writeByte(client_fd, 1);
 
+  return 0;
+}
+
+// S->C Update Entity Position (0x2E)
+// Uses fixed-point deltas: 1 block = 4096 units
+int sc_updateEntityPosition (int client_fd, int id, int16_t dx, int16_t dy, int16_t dz, uint8_t on_ground) {
+
+  int batching = (packet_buffer_fd == client_fd);
+  if (!batching) packet_start(client_fd);
+
+  writeVarInt(client_fd, 8 + sizeVarInt(id));
+  writeByte(client_fd, 0x2E);
+
+  writeVarInt(client_fd, id);
+  writeInt16(client_fd, dx);
+  writeInt16(client_fd, dy);
+  writeInt16(client_fd, dz);
+  writeByte(client_fd, on_ground);
+
+  if (!batching) packet_flush();
+  return 0;
+}
+
+// S->C Update Entity Position and Rotation (0x2F)
+// Uses fixed-point deltas: 1 block = 4096 units
+int sc_updateEntityPositionAndRotation (int client_fd, int id, int16_t dx, int16_t dy, int16_t dz, uint8_t yaw, uint8_t pitch, uint8_t on_ground) {
+
+  int batching = (packet_buffer_fd == client_fd);
+  if (!batching) packet_start(client_fd);
+
+  writeVarInt(client_fd, 10 + sizeVarInt(id));
+  writeByte(client_fd, 0x2F);
+
+  writeVarInt(client_fd, id);
+  writeInt16(client_fd, dx);
+  writeInt16(client_fd, dy);
+  writeInt16(client_fd, dz);
+  writeByte(client_fd, yaw);
+  writeByte(client_fd, pitch);
+  writeByte(client_fd, on_ground);
+
+  if (!batching) packet_flush();
+  return 0;
+}
+
+// S->C Set Entity Velocity (0x5E)
+// Velocity units: 1/8000 blocks per tick
+int sc_setEntityVelocity (int client_fd, int id, int16_t vx, int16_t vy, int16_t vz) {
+
+  int batching = (packet_buffer_fd == client_fd);
+  if (!batching) packet_start(client_fd);
+
+  writeVarInt(client_fd, 7 + sizeVarInt(id));
+  writeByte(client_fd, 0x5E);
+
+  writeVarInt(client_fd, id);
+  writeInt16(client_fd, vx);
+  writeInt16(client_fd, vy);
+  writeInt16(client_fd, vz);
+
+  if (!batching) packet_flush();
   return 0;
 }
 

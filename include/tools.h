@@ -59,6 +59,7 @@ void packet_write (const void *buf, size_t len);  // Add data to buffer
 
 ssize_t writeByte (int client_fd, uint8_t byte);
 ssize_t writeUint16 (int client_fd, uint16_t num);
+ssize_t writeInt16 (int client_fd, int16_t num);
 ssize_t writeUint32 (int client_fd, uint32_t num);
 ssize_t writeUint64 (int client_fd, uint64_t num);
 ssize_t writeFloat (int client_fd, float num);

@@ -229,6 +229,11 @@ typedef struct {
   uint16_t craft_items[9];
   uint8_t inventory_count[41];
   uint8_t craft_count[9];
+  // Last broadcast position in fixed-point (1 block = 4096 units)
+  // Used for relative movement packets to improve client-side interpolation
+  int32_t last_bx;
+  int32_t last_by;
+  int32_t last_bz;
   // Usage depends on player's flags, see below
   // When no flags are set, acts as cursor item ID
   uint16_t flagval_16;

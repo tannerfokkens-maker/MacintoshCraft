@@ -218,6 +218,14 @@ ssize_t writeUint16 (int client_fd, uint16_t num) {
   }
   return send_all(client_fd, &be, sizeof(be));
 }
+ssize_t writeInt16 (int client_fd, int16_t num) {
+  uint16_t be = htons((uint16_t)num);
+  if (packet_buffer_fd == client_fd) {
+    packet_write(&be, sizeof(be));
+    return sizeof(be);
+  }
+  return send_all(client_fd, &be, sizeof(be));
+}
 ssize_t writeUint32 (int client_fd, uint32_t num) {
   uint32_t be = htonl(num);
   if (packet_buffer_fd == client_fd) {

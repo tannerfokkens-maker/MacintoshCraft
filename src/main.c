@@ -442,17 +442,54 @@ void handlePacket (int client_fd, int length, int packet_id, int state) {
             yaw = player->yaw * 180 / 127;
             pitch = player->pitch * 90 / 127;
           }
+
+          // Compute current position in fixed-point (1 block = 4096 units)
+          int32_t cur_x = (int32_t)(x * 4096);
+          int32_t cur_y = (int32_t)(y * 4096);
+          int32_t cur_z = (int32_t)(z * 4096);
+
+          // Compute deltas from last broadcast position
+          int32_t delta_x = cur_x - player->last_bx;
+          int32_t delta_y = cur_y - player->last_by;
+          int32_t delta_z = cur_z - player->last_bz;
+
+          // Use teleport if deltas too large (>8 blocks = ±32768 in fixed-point)
+          // or every 10 seconds for drift correction
+          uint8_t use_teleport = (
+            delta_x < -32768 || delta_x > 32767 ||
+            delta_y < -32768 || delta_y > 32767 ||
+            delta_z < -32768 || delta_z > 32767 ||
+            (server_ticks % (uint32_t)(10 * TICKS_PER_SECOND) == 0)
+          );
+
+          // Yaw/pitch in 256ths for relative packets
+          uint8_t yaw_byte = (uint8_t)((player->yaw + 127) * 256 / 254);
+          uint8_t pitch_byte = (uint8_t)((player->pitch + 127) * 128 / 254);
+
           // Send current position data to all connected players
           for (int i = 0; i < MAX_PLAYERS; i ++) {
             if (player_data[i].client_fd == -1) continue;
             if (player_data[i].flags & 0x20) continue;
             if (player_data[i].client_fd == client_fd) continue;
+            packet_start(player_data[i].client_fd);
             if (packet_id == 0x1F) {
               sc_updateEntityRotation(player_data[i].client_fd, client_fd, player->yaw, player->pitch);
-            } else {
+            } else if (use_teleport) {
               sc_teleportEntity(player_data[i].client_fd, client_fd, x, y, z, yaw, pitch);
+            } else {
+              sc_updateEntityPositionAndRotation(player_data[i].client_fd, client_fd,
+                                                 (int16_t)delta_x, (int16_t)delta_y, (int16_t)delta_z,
+                                                 yaw_byte, pitch_byte, 1);
             }
-            sc_setHeadRotation(player_data[i].client_fd, client_fd, player->yaw);
+            sc_setHeadRotation(player_data[i].client_fd, client_fd, yaw_byte);
+            packet_flush();
+          }
+
+          // Update last broadcast position (only if we sent position data)
+          if (packet_id != 0x1F) {
+            player->last_bx = cur_x;
+            player->last_by = cur_y;
+            player->last_bz = cur_z;
           }
         }
 

@@ -400,6 +400,11 @@ void spawnPlayer (PlayerData *player) {
     spawn_pitch = player->pitch * 90 / 127;
   }
 
+  // Initialize last broadcast position for relative movement packets
+  player->last_bx = (int32_t)(spawn_x * 4096);
+  player->last_by = (int32_t)(spawn_y * 4096);
+  player->last_bz = (int32_t)(spawn_z * 4096);
+
   // Teleport player to spawn coordinates (first pass)
   sc_synchronizePlayerPosition(player->client_fd, spawn_x, spawn_y, spawn_z, spawn_yaw, spawn_pitch);
 
@@ -1760,6 +1765,47 @@ void hurtEntity (int entity_id, int attacker_id, uint8_t damage_type, uint8_t da
     // Update health on the client
     sc_setHealth(entity_id, player->health, player->hunger, player->saturation);
 
+    // Apply knockback for melee damage (from mobs or players)
+    if (attacker_id != -1 && damage_type == D_generic && !entity_died) {
+      short attacker_x, attacker_z;
+
+      if (attacker_id > 0) {
+        // Attacker is a player
+        PlayerData *attacker;
+        if (!getPlayerData(attacker_id, &attacker)) {
+          attacker_x = attacker->x;
+          attacker_z = attacker->z;
+        } else {
+          attacker_x = player->x;
+          attacker_z = player->z;
+        }
+      } else {
+        // Attacker is a mob
+        int mob_index = -attacker_id - 2;
+        if (mob_index >= 0 && mob_index < MAX_MOBS) {
+          attacker_x = mob_data[mob_index].x;
+          attacker_z = mob_data[mob_index].z;
+        } else {
+          attacker_x = player->x;
+          attacker_z = player->z;
+        }
+      }
+
+      // Compute knockback direction away from attacker
+      // Velocity units: 1/8000 blocks per tick
+      int16_t kb_x = 0, kb_z = 0;
+      if (player->x > attacker_x) kb_x = 4000;
+      else if (player->x < attacker_x) kb_x = -4000;
+      if (player->z > attacker_z) kb_z = 4000;
+      else if (player->z < attacker_z) kb_z = -4000;
+
+      // Add upward velocity for knockback effect
+      int16_t kb_y = 3000;
+
+      // Send knockback velocity to the player
+      sc_setEntityVelocity(player->client_fd, player->client_fd, kb_x, kb_y, kb_z);
+    }
+
   } else { // The attacked entity is a mob
 
     int mob_index = -entity_id - 2;
@@ -1855,21 +1901,59 @@ void handleServerTick (int64_t time_since_last_tick) {
     if (player->flags & 0x40) {
       PROF_START(PLAYER_BROADCAST);
       player->flags &= ~0x40;
-      // Convert stored rotation back to degrees
-      float yaw = player->yaw * 180.0f / 127.0f;
-      float pitch = player->pitch * 90.0f / 127.0f;
+      // Convert stored rotation back to degrees for teleport, or keep as byte for relative
+      float yaw_deg = player->yaw * 180.0f / 127.0f;
+      float pitch_deg = player->pitch * 90.0f / 127.0f;
+      // Yaw in 256ths of a full rotation for relative packets
+      uint8_t yaw_byte = (uint8_t)((player->yaw + 127) * 256 / 254);
+      uint8_t pitch_byte = (uint8_t)((player->pitch + 127) * 128 / 254);
+
+      // Compute current position in fixed-point (1 block = 4096 units)
+      // Add 0.5 to center in block, matching what sc_spawnEntityPlayer does
+      int32_t cur_x = (int32_t)((player->x + 0.5) * 4096);
+      int32_t cur_y = (int32_t)(player->y * 4096);
+      int32_t cur_z = (int32_t)((player->z + 0.5) * 4096);
+
+      // Compute deltas from last broadcast position
+      int32_t delta_x = cur_x - player->last_bx;
+      int32_t delta_y = cur_y - player->last_by;
+      int32_t delta_z = cur_z - player->last_bz;
+
+      // Use teleport if deltas too large (>8 blocks = ±32768 in fixed-point)
+      // or every 10 seconds for drift correction
+      uint8_t use_teleport = (
+        delta_x < -32768 || delta_x > 32767 ||
+        delta_y < -32768 || delta_y > 32767 ||
+        delta_z < -32768 || delta_z > 32767 ||
+        (server_ticks % (uint32_t)(10 * TICKS_PER_SECOND) == 0)
+      );
+
       // Send position to all other connected players
       for (int j = 0; j < MAX_PLAYERS; j ++) {
         if (player_data[j].client_fd == -1) continue;
         if (player_data[j].flags & 0x20) continue;
         if (player_data[j].client_fd == player->client_fd) continue;
-        // Batch teleport + head rotation into single network send
+        // Batch movement + head rotation into single network send
         packet_start(player_data[j].client_fd);
-        sc_teleportEntity(player_data[j].client_fd, player->client_fd,
-                          player->x, player->y, player->z, yaw, pitch);
-        sc_setHeadRotation(player_data[j].client_fd, player->client_fd, player->yaw);
+        if (use_teleport) {
+          // Full teleport for drift correction or large movements
+          sc_teleportEntity(player_data[j].client_fd, player->client_fd,
+                            player->x + 0.5, player->y, player->z + 0.5, yaw_deg, pitch_deg);
+        } else {
+          // Relative move with rotation - triggers client-side interpolation
+          sc_updateEntityPositionAndRotation(player_data[j].client_fd, player->client_fd,
+                                             (int16_t)delta_x, (int16_t)delta_y, (int16_t)delta_z,
+                                             yaw_byte, pitch_byte, 1);
+        }
+        sc_setHeadRotation(player_data[j].client_fd, player->client_fd, yaw_byte);
         packet_flush();
       }
+
+      // Update last broadcast position
+      player->last_bx = cur_x;
+      player->last_by = cur_y;
+      player->last_bz = cur_z;
+
       PROF_END(PLAYER_BROADCAST);
     }
     // Below this, process events that happen once per second
@@ -2123,15 +2207,34 @@ void handleServerTick (int64_t time_since_last_tick) {
     // Vary the yaw angle to look just a little less robotic
     yaw += ((r >> 7) & 31) - 16;
 
+    // Compute fixed-point deltas for relative movement (1 block = 4096 units)
+    int16_t dx = (int16_t)((new_x - old_x) * 4096);
+    int16_t dy = (int16_t)((new_y - old_y) * 4096);
+    int16_t dz = (int16_t)((new_z - old_z) * 4096);
+
+    // Every 20 seconds, send a teleport instead of relative move for drift correction
+    uint8_t use_teleport = (server_ticks % (uint32_t)(20 * TICKS_PER_SECOND) == 0);
+
     // Broadcast relevant entity movement packets
     for (int j = 0; j < MAX_PLAYERS; j ++) {
       if (player_data[j].client_fd == -1) continue;
-      sc_teleportEntity (
-        player_data[j].client_fd, entity_id,
-        (double)new_x + 0.5, new_y, (double)new_z + 0.5,
-        yaw * 360 / 256, 0
-      );
+      packet_start(player_data[j].client_fd);
+      if (use_teleport) {
+        // Full teleport for drift correction
+        sc_teleportEntity (
+          player_data[j].client_fd, entity_id,
+          (double)new_x + 0.5, new_y, (double)new_z + 0.5,
+          yaw * 360.0f / 256.0f, 0
+        );
+      } else {
+        // Relative move with rotation - triggers client-side interpolation
+        sc_updateEntityPositionAndRotation(
+          player_data[j].client_fd, entity_id,
+          dx, dy, dz, yaw, 0, 1
+        );
+      }
       sc_setHeadRotation(player_data[j].client_fd, entity_id, yaw);
+      packet_flush();
     }
 
   }
