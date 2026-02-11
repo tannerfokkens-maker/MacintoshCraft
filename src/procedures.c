@@ -31,7 +31,7 @@ typedef struct {
   short start_z;
   uint8_t start_y;
   uint8_t active;
-  uint8_t sent_midpoint;
+  uint8_t steps_sent;  // How many interpolation steps have been sent (0 to MOB_INTERP_STEPS)
 } MobInterpState;
 
 static MobInterpState mob_interp_state[MAX_MOBS];
@@ -1615,7 +1615,7 @@ void spawnMob (uint8_t type, short x, uint8_t y, short z, uint8_t health) {
     mob_data[i].data = health & 31;
 #ifdef ENABLE_OPTIN_MOB_INTERPOLATION
     mob_interp_state[i].active = 0;
-    mob_interp_state[i].sent_midpoint = 0;
+    mob_interp_state[i].steps_sent = 0;
 #endif
 
     // Forge a UUID from a random number and the mob's index
@@ -2269,7 +2269,7 @@ attempt_move:
       mob_interp_state[i].start_y = old_y;
       mob_interp_state[i].start_z = old_z;
       mob_interp_state[i].active = 1;
-      mob_interp_state[i].sent_midpoint = 0;
+      mob_interp_state[i].steps_sent = 0;
       any_mob_moved = 1;
     } else {
       mob_interp_state[i].active = 0;
@@ -2337,17 +2337,29 @@ void processMobInterpolation (int64_t now) {
   int64_t elapsed = now - mob_interp_tick_start;
   if (elapsed <= 0) return;
 
-  float alpha = (float)elapsed / (float)TIME_BETWEEN_TICKS;
+  /* Calculate which step we should be on (1 to MOB_INTERP_STEPS) */
+  int current_step = (int)((elapsed * MOB_INTERP_STEPS) / TIME_BETWEEN_TICKS);
+  if (current_step > MOB_INTERP_STEPS) current_step = MOB_INTERP_STEPS;
+  if (current_step < 1) return;  /* Not yet time for first step */
 
-  /* At end of tick interval, send final positions and clear state */
-  if (elapsed >= TIME_BETWEEN_TICKS) {
-    for (int i = 0; i < MAX_MOBS; i ++) {
-      MobInterpState *state = &mob_interp_state[i];
-      if (!state->active) continue;
+  for (int i = 0; i < MAX_MOBS; i ++) {
+    MobInterpState *state = &mob_interp_state[i];
+    if (!state->active) continue;
+
+    /* Send all steps that haven't been sent yet */
+    while (state->steps_sent < current_step) {
+      state->steps_sent++;
 
       short end_x = mobBlockX(&mob_data[i]);
       short end_z = mobBlockZ(&mob_data[i]);
       uint8_t end_y = mob_data[i].y;
+
+      /* Calculate interpolation factor for this step (1/STEPS to STEPS/STEPS) */
+      float alpha = (float)state->steps_sent / (float)MOB_INTERP_STEPS;
+
+      double interp_x = (double)state->start_x + (double)(end_x - state->start_x) * alpha + 0.5;
+      double interp_z = (double)state->start_z + (double)(end_z - state->start_z) * alpha + 0.5;
+      double interp_y = (double)state->start_y + (double)(end_y - state->start_y) * alpha;
 
       int dx = end_x - state->start_x;
       int dz = end_z - state->start_z;
@@ -2359,57 +2371,25 @@ void processMobInterpolation (int64_t now) {
         sc_teleportEntity(
           player_data[j].client_fd,
           -2 - i,
-          (double)end_x + 0.5,
-          end_y,
-          (double)end_z + 0.5,
+          interp_x,
+          interp_y,
+          interp_z,
           yaw * 360.0f / 256.0f,
           0
         );
         if (yaw) sc_setHeadRotation(player_data[j].client_fd, -2 - i, yaw);
       }
+    }
 
+    /* Deactivate after final step */
+    if (state->steps_sent >= MOB_INTERP_STEPS) {
       state->active = 0;
     }
-    mob_interp_tick_start = 0;
-    return;
   }
 
-  /* At midpoint (alpha >= 0.5), send interpolated positions */
-  if (alpha < 0.5f) return;
-
-  for (int i = 0; i < MAX_MOBS; i ++) {
-    MobInterpState *state = &mob_interp_state[i];
-    if (!state->active) continue;
-    if (state->sent_midpoint) continue;
-
-    short end_x = mobBlockX(&mob_data[i]);
-    short end_z = mobBlockZ(&mob_data[i]);
-    uint8_t end_y = mob_data[i].y;
-
-    double interp_x = (double)state->start_x + (double)(end_x - state->start_x) * 0.5 + 0.5;
-    double interp_z = (double)state->start_z + (double)(end_z - state->start_z) * 0.5 + 0.5;
-    double interp_y = (double)state->start_y + (double)(end_y - state->start_y) * 0.5;
-
-    int dx = end_x - state->start_x;
-    int dz = end_z - state->start_z;
-    uint8_t yaw = (dx != 0 || dz != 0) ? mobBaseYaw(dx, dz) : 0;
-
-    for (int j = 0; j < MAX_PLAYERS; j ++) {
-      if (player_data[j].client_fd == -1) continue;
-      if (player_data[j].flags & 0x20) continue;
-      sc_teleportEntity(
-        player_data[j].client_fd,
-        -2 - i,
-        interp_x,
-        interp_y,
-        interp_z,
-        yaw * 360.0f / 256.0f,
-        0
-      );
-      if (yaw) sc_setHeadRotation(player_data[j].client_fd, -2 - i, yaw);
-    }
-
-    state->sent_midpoint = 1;
+  /* Clear tick start when all mobs have completed interpolation */
+  if (elapsed >= TIME_BETWEEN_TICKS) {
+    mob_interp_tick_start = 0;
   }
 
 }

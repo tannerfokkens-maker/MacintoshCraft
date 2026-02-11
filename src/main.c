@@ -100,6 +100,9 @@ static void interleave_process_other_clients(int current_client_fd) {
     /* Always yield to system (Mac events, ESP watchdog, etc.) */
     task_yield();
 
+    /* Advance mob interpolation during chunk sends to prevent freezing */
+    processMobInterpolation(get_program_time());
+
     /* If already processing an interleave, don't recurse */
     if (interleave_active) return;
     interleave_active = 1;
