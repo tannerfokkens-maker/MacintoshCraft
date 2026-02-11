@@ -44,31 +44,14 @@ uint8_t getChunkBiome (short x, short z) {
   short biome_x = div_floor(x, BIOME_SIZE);
   short biome_z = div_floor(z, BIOME_SIZE);
 
-  // Use hash mixing to get 6 biomes from a 32-bit seed.
-  // The multiplication by a large prime ensures neighboring biome
-  // coordinates don't produce correlated values.
+  // The biome itself is plucked directly from the world seed.
+  // The 32-bit seed is treated as a 4x4 biome matrix, with each biome
+  // taking up 2 bytes. This is why there are only 4 biomes, excluding
+  // beaches. Using the world seed as a repeating pattern avoids
+  // having to generate and layer yet another hash.
   uint8_t index = abs((biome_x & 3) + ((biome_z * 4) & 15));
-  uint32_t biome_hash = world_seed ^ (index * 2654435761u);
-  return biome_hash % 6;  // 6 biomes: plains, swamp, desert, snowy, extreme hills, forest
+  return (world_seed >> (index * 2)) & 3;
 
-}
-
-// Check if coordinates are in a river zone (near biome boundary).
-// Rivers form along the inner edge of biome circles, creating water channels.
-static uint8_t isRiverZone (short x, short z) {
-  // Use same coordinate transform as getChunkBiome
-  x += BIOME_RADIUS;
-  z += BIOME_RADIUS;
-
-  int8_t dx = BIOME_RADIUS - mod_abs(x, BIOME_SIZE);
-  int8_t dz = BIOME_RADIUS - mod_abs(z, BIOME_SIZE);
-  int dist_sq = dx * dx + dz * dz;
-
-  // River zone: within 2 blocks of biome radius (inner ring)
-  int inner_bound = (BIOME_RADIUS - 3) * (BIOME_RADIUS - 3);
-  int outer_bound = BIOME_RADIUS * BIOME_RADIUS;
-
-  return (dist_sq > inner_bound && dist_sq <= outer_bound);
 }
 
 uint8_t getCornerHeight (uint32_t hash, uint8_t biome) {
@@ -76,11 +59,12 @@ uint8_t getCornerHeight (uint32_t hash, uint8_t biome) {
   // When calculating the height, parts of the hash are used as random values.
   // Often, multiple values are stacked to stabilize the distribution while
   // allowing for occasionally larger variances.
-  uint8_t height = TERRAIN_BASE_HEIGHT;
+  // Use signed int to avoid underflow when subtracting for continent variation.
+  int height = TERRAIN_BASE_HEIGHT;
 
   // Large-scale terrain shape using upper bits of hash (not used by biome detail).
   // Creates valleys, plateaus, and highlands that vary across biome-scale distances.
-  uint8_t continent = ((hash >> 16) & 7) + ((hash >> 20) & 7);  // Range: 0-14
+  int continent = ((hash >> 16) & 7) + ((hash >> 20) & 7);  // Range: 0-14
   height += continent - 7;  // Center around 0: -7 to +7
 
   switch (biome) {
@@ -135,34 +119,14 @@ uint8_t getCornerHeight (uint32_t hash, uint8_t biome) {
       break;
     }
 
-    case W_extreme_hills: {
-      // Wide height range creates mountains and valleys
-      height += (
-        (hash & 7) +
-        ((hash >> 4) & 7) +
-        ((hash >> 8) & 7) +
-        ((hash >> 12) & 3)
-      );
-      // Occasional cliffs: if detail height is high, amplify it
-      if (height > TERRAIN_BASE_HEIGHT + 16) height += (hash >> 24) & 7;
-      break;
-    }
-
-    case W_forest: {
-      // Similar to plains but slightly more varied
-      height += (
-        (hash & 3) +
-        ((hash >> 4) & 3) +
-        ((hash >> 8) & 3) +
-        ((hash >> 12) & 3)
-      );
-      break;
-    }
-
     default: break;
   }
 
-  return height;
+  // Clamp to valid range
+  if (height < 1) height = 1;
+  if (height > 255) height = 255;
+
+  return (uint8_t)height;
 
 }
 
@@ -193,26 +157,17 @@ uint8_t getHeightAtFromAnchors (int rx, int rz, ChunkAnchor *anchor_ptr) {
 
 uint8_t getHeightAtFromHash (int rx, int rz, int _x, int _z, uint32_t chunk_hash, uint8_t biome) {
 
-  uint8_t height;
   if (rx == 0 && rz == 0) {
-    height = getCornerHeight(chunk_hash, biome);
-    if (height > 67) height -= 1;
-  } else {
-    height = interpolate(
-      getCornerHeight(chunk_hash, biome),
-      getCornerHeight(getChunkHash(_x + 1, _z), getChunkBiome(_x + 1, _z)),
-      getCornerHeight(getChunkHash(_x, _z + 1), getChunkBiome(_x, _z + 1)),
-      getCornerHeight(getChunkHash(_x + 1, _z + 1), getChunkBiome(_x + 1, _z + 1)),
-      rx, rz
-    );
+    int height = getCornerHeight(chunk_hash, biome);
+    if (height > 67) return height - 1;
   }
-
-  // Carve rivers along biome boundaries by clamping height to sea level
-  if (isRiverZone(_x, _z) && height > 62) {
-    height = 62;
-  }
-
-  return height;
+  return interpolate(
+    getCornerHeight(chunk_hash, biome),
+    getCornerHeight(getChunkHash(_x + 1, _z), getChunkBiome(_x + 1, _z)),
+    getCornerHeight(getChunkHash(_x, _z + 1), getChunkBiome(_x, _z + 1)),
+    getCornerHeight(getChunkHash(_x + 1, _z + 1), getChunkBiome(_x + 1, _z + 1)),
+    rx, rz
+  );
 
 }
 
@@ -306,46 +261,6 @@ uint8_t getTerrainAtFromCache (int x, int y, int z, int rx, int rz, ChunkAnchor 
       break;
     }
 
-    case W_extreme_hills: { // Generate stone patches on extreme hills
-
-      // Exposed stone on steep terrain (high elevation)
-      if (y == height && height > TERRAIN_BASE_HEIGHT + 18) {
-        return B_stone;
-      }
-
-      break;
-    }
-
-    case W_forest: { // Generate denser trees in forests (same as plains)
-
-      // Don't generate trees underwater
-      if (feature.y < 64) break;
-
-      // Handle tree stem and the dirt under it
-      if (x == feature.x && z == feature.z) {
-        if (y == feature.y - 1) return B_dirt;
-        if (y >= feature.y && y < feature.y - feature.variant + 6) return B_oak_log;
-      }
-
-      // Get X/Z distance from center of tree
-      uint8_t dx = x > feature.x ? x - feature.x : feature.x - x;
-      uint8_t dz = z > feature.z ? z - feature.z : feature.z - z;
-
-      // Generate leaf clusters
-      if (dx < 3 && dz < 3 && y > feature.y - feature.variant + 2 && y < feature.y - feature.variant + 5) {
-        if (y == feature.y - feature.variant + 4 && dx == 2 && dz == 2) break;
-        return B_oak_leaves;
-      }
-      if (dx < 2 && dz < 2 && y >= feature.y - feature.variant + 5 && y <= feature.y - feature.variant + 6) {
-        if (y == feature.y - feature.variant + 6 && dx == 1 && dz == 1) break;
-        return B_oak_leaves;
-      }
-
-      // Forest floor is grass
-      if (y == height) return B_grass_block;
-      return B_air;
-    }
-
     default: break;
   }
 
@@ -365,26 +280,24 @@ uint8_t getTerrainAtFromCache (int x, int y, int z, int rx, int rz, ChunkAnchor 
   // Starting at 4 blocks below terrain level, generate minerals and caves
   if (y <= height - 4) {
     // Hash-based cave carving: varies in Y position and size per column
-    // Creates more interesting cave systems than the original flat slab
     uint8_t cave_hash = ((rx & 15) << 4) + (rz & 15);
     cave_hash ^= cave_hash << 3;
     cave_hash ^= cave_hash >> 5;
     cave_hash ^= cave_hash << 2;
 
     // Primary cave at varying Y level per column
-    uint8_t cave_center = (cave_hash & 31) + 16;  // Y 16-47
-    uint8_t cave_radius = (anchor.hash >> (cave_hash & 15)) & 3;  // 0-3 blocks
+    uint8_t cave_center = (cave_hash & 31) + 12;  // Y 12-43
+    uint8_t cave_radius = 1 + ((anchor.hash >> (cave_hash & 15)) & 3);  // 1-4 blocks
 
     if (y >= cave_center - cave_radius && y <= cave_center + cave_radius) {
-      // Don't carve if this would break through to the surface
-      if (y < height - 6) return B_air;
+      if (y > 4 && y < height - 6) return B_air;
     }
 
-    // Secondary cave layer (50% of columns have it)
+    // Secondary smaller cave (50% of columns)
     if ((anchor.hash >> 28) & 1) {
       uint8_t cave2_center = ((cave_hash >> 4) & 31) + 8;  // Y 8-39
       if (y >= cave2_center - 1 && y <= cave2_center + 1) {
-        if (y < height - 6) return B_air;
+        if (y > 4 && y < height - 6) return B_air;
       }
     }
 
@@ -453,8 +366,8 @@ ChunkFeature getFeatureFromAnchor (ChunkAnchor anchor) {
   // The following check does two things:
   //  firstly, it ensures that trees don't cross chunk boundaries;
   //  secondly, it reduces overall feature count. This is favorable
-  //  everywhere except for swamps and forests, which need more features.
-  if (anchor.biome != W_mangrove_swamp && anchor.biome != W_forest) {
+  //  everywhere except for swamps, which are otherwise very boring.
+  if (anchor.biome != W_mangrove_swamp) {
     if (feature.x < 3 || feature.x > CHUNK_SIZE - 3) skip_feature = true;
     else if (feature.z < 3 || feature.z > CHUNK_SIZE - 3) skip_feature = true;
   }

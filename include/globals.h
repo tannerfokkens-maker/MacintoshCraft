@@ -149,15 +149,11 @@ extern chunk_interleave_fn chunk_interleave_callback;
 // every time a block is broken.
 #define ENABLE_PICKUP_ANIMATION
 
-// Optional: interpolate mob movement between ticks by sending intermediate
-// position updates. Disabled by default to avoid extra memory/bandwidth on
+// Optional: interpolate mob movement between ticks by sending one midpoint
+// update per step. Disabled by default to avoid extra memory/bandwidth on
 // very constrained targets. On Mac 68k, this is controlled by a runtime
 // preference toggle.
 #define ENABLE_OPTIN_MOB_INTERPOLATION
-
-// Number of interpolation steps per tick. Higher values = smoother motion
-// but more bandwidth. 4-6 works well for most cases.
-#define MOB_INTERP_STEPS 4
 
 // If defined, players are able to receive damage from nearby cacti.
 #define ENABLE_CACTUS_DAMAGE
