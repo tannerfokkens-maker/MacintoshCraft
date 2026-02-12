@@ -1,53 +1,126 @@
-# bareiron
-Minimalist Minecraft server for memory-restrictive embedded systems.
+# MacintoshCraft
 
-The goal of this project is to enable hosting Minecraft servers on very weak devices, such as the ESP32. The project's priorities are, in order: **memory usage**, **performance**, and **features**. Because of this, compliance with vanilla Minecraft is not guaranteed, nor is it a goal of the project.
+A fork of [bareiron](https://github.com/p2r3/bareiron) - a minimalist Minecraft server ported to run on 68k Macintosh computers.
+
+This project brings Minecraft 1.21.8 server functionality to classic Macintosh hardware using Open Transport networking. It prioritizes **memory usage** and **performance** to run on systems with as little as 8MB of RAM.
 
 - Minecraft version: `1.21.8`
 - Protocol version: `772`
+- Target platform: 68k Macintosh (System 7+ with MacTCP or Open Transport)
 
 > [!WARNING]
-> Currently, only the vanilla client is officially supported. Issues have been reported when using Fabric or similar.
+> Only the vanilla Minecraft client is officially supported. Issues have been reported when using Fabric or similar.
 
-## Quick start
-For PC x86_64 platforms, grab the [latest build binary](https://github.com/p2r3/bareiron/releases/download/latest/bareiron.exe) and run it. The file is a [Cosmopolitan polyglot](https://github.com/jart/cosmopolitan), which means it'll run on Windows, Linux, and possibly Mac, despite the file extension. Note that the server's default settings cannot be reconfigured without compiling from source.
+## Features
 
-For microcontrollers, see the section on **compilation** below.
+### 68k Mac Specific
+- **Dual networking stack** - Supports both MacTCP (System 6+) and Open Transport (System 7.5+)
+- **Runtime configuration** - Adjust view distance, chunk cache size, and mob interpolation via menu
+- **Chunk caching** - LRU cache reduces repeated terrain generation (configurable size based on available RAM)
+- **Mob interpolation** - Smooth mob movement even during chunk loading on slow systems
+- **Optimized worldgen** - Two-octave terrain height variation and improved cave generation
 
-## Compilation
-Before compiling, you'll need to dump registry data from a vanilla Minecraft server. On Linux, this can be done automatically using the `extract_registries.sh` script. Otherwise, the manual process is as follows: create a folder called `notchian` here, and put a Minecraft server JAR in it. Then, follow [this guide](https://minecraft.wiki/w/Minecraft_Wiki:Projects/wiki.vg_merge/Data_Generators) to dump all of the registries (use the _second_ command with the `--all` flag). Finally, run `build_registries.js` with either [bun](https://bun.sh/), [node](https://nodejs.org/en/download), or [deno](https://docs.deno.com/runtime/getting_started/installation/).
+### Core Features (from bareiron)
+- Procedural terrain generation with biomes (plains, desert, swamp, snowy plains)
+- Multiplayer support (up to 16 players configurable)
+- Survival gameplay: mining, crafting, building, mobs
+- World persistence to disk
+- Chest and inventory system
+- Day/night cycle
 
-- To compile on Linux, install `gcc` and run `./build.sh`.
-- For compiling on Windows, there are a few options:
-  - To compile a native Windows binary: install [MSYS2](https://www.msys2.org/) and open the "MSYS2 MINGW64" shell. From there, run `pacman -Sy mingw-w64-x86_64-gcc`, navigate to this project's directory, and run `./build.sh`.
-  - To compile a native 32-bit binary (compatible with Windows 95/98, but why would you ever want that), use the same steps above, except with `pacman -Sy mingw-w64-cross-gcc` and `./build.sh --9x`.
-  - To compile a MSYS2-linked binary: install [MSYS2](https://www.msys2.org/), and open the "MSYS2 MSYS" shell. From there, install `gcc` (run `pacman -Sy gcc`), navigate to this project's directory and run `./build.sh`. 
-  - To compile and run a Linux binary from Windows: install WSL, and from there install `gcc` and run `./build.sh` in this project's directory.
-- To target an ESP variant, set up a PlatformIO project (select the ESP-IDF framework, **not Arduino**) and clone this repository on top of it. See **Configuration** below for further steps. For better performance, consider changing the clock speed and enabling compiler optimizations. If you don't know how to do this, there are plenty of resources online.
+## Building for 68k Macintosh
+
+### Prerequisites
+- [Retro68](https://github.com/autc04/Retro68) cross-compiler toolchain
+- CMake 3.x+
+- Java 21+ (for registry extraction)
+
+### Build Steps
+
+1. **Extract Minecraft registries** (requires vanilla server JAR):
+   ```bash
+   ./extract_registries.sh
+   # Or manually: bun run build_registries.js
+   ```
+
+2. **Build for 68k Mac**:
+   ```bash
+   mkdir -p build-mac68k && cd build-mac68k
+   cmake .. -DCMAKE_TOOLCHAIN_FILE=/path/to/Retro68-build/toolchain/m68k-apple-macos/cmake/retro68.toolchain.cmake
+   make
+   ```
+
+3. **Output files**:
+   - `bareiron.dsk` - Disk image for emulators
+   - `bareiron.bin` - MacBinary for transfer to real hardware
+   - `bareiron.APPL` - Raw application
+
+### Running
+- Requires System 7 or later with MacTCP or Open Transport installed
+- Minimum 8MB RAM recommended (more RAM = larger chunk cache)
+- Connect to your Mac's IP address on port 25565 from Minecraft 1.21.8
+
+## Building for Other Platforms
+
+### Linux/macOS/Windows
+```bash
+./build.sh
+```
+
+### Windows 9x
+```bash
+./build.sh --9x
+```
+
+### ESP32
+Use PlatformIO with ESP-IDF framework. See original bareiron documentation.
 
 ## Configuration
-Configuring the server requires compiling it from its source code as described in the section above.
 
-Most user-friendly configuration options are available in `include/globals.h`, including WiFi credentials for embedded setups. Some other details, like the MOTD or starting time of day, can be found in `src/globals.c`. For everything else, you'll have to dig through the code.
+Configuration options are in `include/globals.h`:
 
-Here's a summary of some of the more important yet less trivial options for those who plan to use this on a real microcontroller with real players:
+| Option | Description |
+|--------|-------------|
+| `PORT` | Server port (default: 25565) |
+| `MAX_PLAYERS` | Maximum player slots (default: 16) |
+| `view_distance` | Render distance in chunks (runtime configurable on Mac) |
+| `TERRAIN_BASE_HEIGHT` | Base terrain Y level (default: 60) |
+| `ALLOW_CHESTS` | Enable chest functionality |
+| `DO_FLUID_FLOW` | Enable water/lava flow simulation |
+| `ENABLE_OPTIN_MOB_INTERPOLATION` | Smooth mob movement between ticks |
 
-- Depending on the player count, the performance of the MCU, and the bandwidth of your network, player position broadcasting could potentially throttle your connection. If you find this to be the case, try commenting out `BROADCAST_ALL_MOVEMENT` and `SCALE_MOVEMENT_UPDATES_TO_PLAYER_COUNT`. This will tie movement to the tickrate. If this change makes movement too choppy, you can decrease `TIME_BETWEEN_TICKS` at the cost of more compute.
-- If you experience crashes or instability related to chests or water, those features can be disabled with `ALLOW_CHESTS` and `DO_FLUID_FLOW`, respectively.
-- If you find frequent repeated chunk generation to choke the server, increasing `VISITED_HISTORY` might help. There isn't _that_ much of a memory footprint for this - increasing it to `64` for example would only take up 240 extra bytes per allocated player.
+### Mac-Specific Runtime Options
+On 68k Mac, use the application menu to adjust:
+- View distance (affects chunk loading range)
+- Chunk cache size (based on available memory)
+- Mob interpolation toggle
 
-## Non-volatile storage (optional)
-This section applies to those who target ESP variants and wish to persist world data after a shutdown. *This is not necessary on PC platforms*, as world and player data is written to `world.bin` by default.
+## Architecture
 
-The simplest way to accomplish this is to set up LittleFS in PlatformIO and comment out the `#ifndef` surrounding `SYNC_WORLD_TO_DISK` in `globals.h`. Since flash writes are typically slow and blocking, you'll likely want to uncomment `DISK_SYNC_BLOCKS_ON_INTERVAL`. Depending on the flash size of your board, you may also have to decrease `MAX_BLOCK_CHANGES`, so that the world data fits in your LittleFS partition.
+```
+src/
+├── main.c          # Server loop, packet routing, tick scheduling
+├── packets.c       # Minecraft protocol encoding/decoding
+├── procedures.c    # Game logic, player/entity management
+├── worldgen.c      # Procedural terrain and cave generation
+├── crafting.c      # Recipe system
+├── tools.c         # Cross-platform utilities
+├── serialize.c     # World persistence
+├── mac68k_net.c    # Open Transport networking (Mac only)
+└── mac68k_console.c # Mac UI and preferences (Mac only)
 
-If using an SD card module or other virtual file system, you'll have to implement the filesystem setup routine on your own. The built-in serializer should still work though, as it uses POSIX filesystem calls.
+include/
+├── globals.h       # Configuration and data structures
+├── mac68k_net.h    # Mac networking header
+└── mac68k_console.h # Mac UI header
+```
 
-Alternatively, if you can't set up a file system, you can dump and upload world data over TCP. This can be enabled by uncommenting `DEV_ENABLE_BEEF_DUMPS` in `globals.h`. *Note: this system implements no security or authentication.* With this option enabled, anyone with access to the server can upload arbitrary world data.
+## Credits
 
-## Contribution
-- Create issues and discuss with the maintainer(s) before making pull requests. Even for small changes.
-- Follow the existing code style. Ensure that your changes fit in with the surrounding code, even if you disagree with the style. Pull requests with inconsistent style will be nitpicked.
-- Test your code before creating a pull request or requesting a review, regardless of how "simple" your change is. It's a basic form of respect towards the maintainer and reviewer.
-- Development tooling and compilation improvements _are not welcome,_ unless you've worked with the codebase long enough to have noticed practical shortcomings in that area. Adding a single compiler flag is not a meaningful first contribution.
-- For information on the Minecraft server protocol, [refer to the wiki](https://minecraft.wiki/w/Java_Edition_protocol/Packets). For everything else, use a [search engine](https://google.com).
+- Original [bareiron](https://github.com/p2r3/bareiron) by p2r3
+- [Retro68](https://github.com/autc04/Retro68) cross-compiler by autc04
+- Minecraft protocol documentation from [wiki.vg](https://wiki.vg)
+
+## License
+
+See original bareiron repository for license information.
