@@ -59,6 +59,7 @@ I would say it runs okay as of now. I test this on a 68040 40 MHz and it has nea
 - Requires System 7 or later with MacTCP or Open Transport installed
 - Minimum 8MB RAM recommended (more RAM = larger chunk cache)
 - Connect to your Mac's IP address on port 25565 from Minecraft 1.21.8
+- If you can, use Open transport. It works far better for chunk sends. Just make sure your ethernet drivers are updated to the latest possible version, and you have no conflicts in your extensions folder with older drivers. MacTCP will work, though.
 
 ## Configuration
 
