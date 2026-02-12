@@ -2,14 +2,13 @@
 
 A fork of [bareiron](https://github.com/p2r3/bareiron) - a minimalist Minecraft server ported to run on 68k Macintosh computers.
 
-This project brings Minecraft 1.21.8 server functionality to classic Macintosh hardware using Open Transport networking. It prioritizes **memory usage** and **performance** to run on systems with as little as 8MB of RAM.
+This project brings Minecraft 1.21.8 server functionality to classic Macintosh hardware using Open Transport networking.
 
 - Minecraft version: `1.21.8`
 - Protocol version: `772`
 - Target platform: 68k Macintosh (System 7+ with MacTCP or Open Transport)
 
-> [!WARNING]
-> Only the vanilla Minecraft client is officially supported. Issues have been reported when using Fabric or similar.
+I would say it runs okay as of now. I test this on a 68040 40 MHz and it has near instantaneous reaction for single player mode. 2 players (tested on the internet+LAN) is slower but playable.
 
 ## Features
 
@@ -17,7 +16,6 @@ This project brings Minecraft 1.21.8 server functionality to classic Macintosh h
 - **Dual networking stack** - Supports both MacTCP (System 6+) and Open Transport (System 7.5+)
 - **Runtime configuration** - Adjust view distance, chunk cache size, and mob interpolation via menu
 - **Chunk caching** - LRU cache reduces repeated terrain generation (configurable size based on available RAM)
-- **Mob interpolation** - Smooth mob movement even during chunk loading on slow systems
 - **Optimized worldgen** - Two-octave terrain height variation and improved cave generation
 
 ### Core Features (from bareiron)
@@ -59,21 +57,6 @@ This project brings Minecraft 1.21.8 server functionality to classic Macintosh h
 - Requires System 7 or later with MacTCP or Open Transport installed
 - Minimum 8MB RAM recommended (more RAM = larger chunk cache)
 - Connect to your Mac's IP address on port 25565 from Minecraft 1.21.8
-
-## Building for Other Platforms
-
-### Linux/macOS/Windows
-```bash
-./build.sh
-```
-
-### Windows 9x
-```bash
-./build.sh --9x
-```
-
-### ESP32
-Use PlatformIO with ESP-IDF framework. See original bareiron documentation.
 
 ## Configuration
 
