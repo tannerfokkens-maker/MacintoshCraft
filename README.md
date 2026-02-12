@@ -32,6 +32,7 @@ I would say it runs okay as of now. I test this on a 68040 40 MHz and it has nea
 - [Retro68](https://github.com/autc04/Retro68) cross-compiler toolchain
 - CMake 3.x+
 - Java 21+ (for registry extraction)
+- Universal interfaces are necessary to install all the MacTCP/OT libraries. Look at the Retro68 docs on how to do this.
 
 ### Build Steps
 
