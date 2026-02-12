@@ -1,7 +1,7 @@
 # MacintoshCraft
 
 A fork of [bareiron](https://github.com/p2r3/bareiron) - a minimalist Minecraft server ported to run on 68k Macintosh computers.
-
+d
 This project brings Minecraft 1.21.8 server functionality to classic Macintosh hardware using Open Transport networking.
 
 - Minecraft version: `1.21.8`
@@ -18,6 +18,7 @@ I would say it runs okay as of now. I test this on a 68040 40 MHz and it has nea
 - **Chunk caching** - LRU cache reduces repeated terrain generation (configurable size based on available RAM)
 - **Optimized worldgen** - Two-octave terrain height variation and improved cave generation
 - Heavily optimized networking. The ESP32 has much better networking compared to Classic MacOS, so I had to implement a lot of interleaving, and prioritizing specific actions. Chunk loading is primarily where things really slow down. If you're doing multiplayer, I recommend staying close to the other player while exploring. If you have a larger cache, though, you can probably pre-load a pretty large area and build in that without much issue.
+- Selectively grabbed some PR's from the original project to include, mostly related to performance.
 
 ### Core Features (from bareiron)
 - Procedural terrain generation with biomes (plains, desert, swamp, snowy plains)
