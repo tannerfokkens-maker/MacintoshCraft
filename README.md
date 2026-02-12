@@ -8,7 +8,7 @@ This project brings Minecraft 1.21.8 server functionality to classic Macintosh h
 - Protocol version: `772`
 - Target platform: 68k Macintosh (System 7+ with MacTCP or Open Transport)
 
-I would say it runs okay as of now. I test this on a 68040 40 MHz and it has near instantaneous reaction for single player mode. 2 players (tested on the internet+LAN) is slower but playable. The ESP32 is at least 7x faster than a 40MHz 68040, but we still get quite responsive performance nonetheless. Before my optimizations, it would take up to 20 seconds for a mined block to appear in the inventory, even on single player mode. After, its instantaneous.
+I would say it runs okay as of now. I test this on a 68040 40 MHz . 2 players (tested on the internet+LAN) is slower but playable. The ESP32 is at least 7x faster than a 40MHz 68040, but we still get quite responsive performance nonetheless. Before my optimizations, it would take up to 20 seconds for a mined block to appear in the inventory, even on single player mode. After, its instantaneous.
 
 ## Features
 
