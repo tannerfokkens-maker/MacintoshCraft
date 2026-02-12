@@ -8,14 +8,14 @@ This project brings Minecraft 1.21.8 server functionality to classic Macintosh h
 - Protocol version: `772`
 - Target platform: 68k Macintosh (System 7+ with MacTCP or Open Transport)
 
-I would say it runs okay as of now. I test this on a 68040 40 MHz and it has near instantaneous reaction for single player mode. 2 players (tested on the internet+LAN) is slower but playable.
+I would say it runs okay as of now. I test this on a 68040 40 MHz and it has near instantaneous reaction for single player mode. 2 players (tested on the internet+LAN) is slower but playable. The ESP32 is at least 7x faster than a 40MHz 68040, but we still get quite responsive performance nonetheless. Before my optimizations, it would take up to 20 seconds for a mined block to appear in the inventory, even on single player mode. After, its instantaneous.
 
 ## Features
 
 ### 68k Mac Specific
 - **Dual networking stack** - Supports both MacTCP (System 6+) and Open Transport (System 7.5+)
 - **Runtime configuration** - Adjust view distance, chunk cache size, and mob interpolation via menu
-- **Chunk caching** - LRU cache reduces repeated terrain generation (configurable size based on available RAM)
+- **Chunk caching** - LRU cache reduces repeated terrain generation (configurable size based on available RAM). This is the one point that we actually have an advantage over the ESP32.
 - **Optimized worldgen** - Two-octave terrain height variation and improved cave generation
 - Heavily optimized networking. The ESP32 has much better networking compared to Classic MacOS, so I had to implement a lot of interleaving, and prioritizing specific actions. Chunk loading is primarily where things really slow down. If you're doing multiplayer, I recommend staying close to the other player while exploring. If you have a larger cache, though, you can probably pre-load a pretty large area and build in that without much issue.
 - Selectively grabbed some PR's from the original project to include, mostly related to performance.
